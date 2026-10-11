@@ -82,6 +82,12 @@ assert(b?.case == 60, "Battery case parse")
 assert(b?.averageLR == 81, "Battery average LR")
 assert(b?.totalWeightedPercent == 64, "Battery weighted total percent")
 
+// Single-earbud battery fixture (observed on Buds Z2):
+// AA 0B 00 00 06 81 25 04 00 00 01 01 5A (count=1, id=1, 90%)
+let batZ2 = [UInt8]([0xAA, 0x0B, 0x00, 0x00, 0x06, 0x81, 0x25, 0x04, 0x00, 0x00, 0x01, 0x01, 0x5A])
+let bZ2 = OPOParse.parseBattery(batZ2)
+assert(bZ2?.left == 90, "Buds Z2 battery parse left == 90")
+
 // ANC push fixture (CAT=0x04 SUB=0x02): parser returns raw last byte (may be non-classic)
 let ancPush = [UInt8](arrayLiteral: 0xAA, 0x0B, 0x00, 0x00, 0x04, 0x02, 0x10, 0x04, 0x00, 0x03, 0x01, 0x01, 0x10)
 assert(OPOParse.parseANCModeByte(ancPush) == 0x10, "ANC push returns raw last byte")

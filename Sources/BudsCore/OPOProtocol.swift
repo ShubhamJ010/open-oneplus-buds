@@ -5,6 +5,12 @@ public enum OPOProtocol {
     public static let write079A = "0100079A-D102-11E1-9B23-00025B00A5A5"
     public static let notify079A = "0200079A-D102-11E1-9B23-00025B00A5A5"
 
+    // Alternative service/characteristic UUIDs used by OnePlus Buds Z2 and related models:
+    public static let service08A4 = "000008A4-0000-1000-8000-00805F9B34FB"
+    public static let write08A4 = "00000001-0000-1000-8000-00805F9B34FB"
+    public static let notify08A4 = "00000002-0000-1000-8000-00805F9B34FB"
+    public static let serviceFE2C = "FE2C"
+
     // Observed FE2C characteristic from the script.
     public static let fe2cCommandChar = "FE2C123A-8366-4814-8EB0-01DE32100BEA"
 
@@ -107,7 +113,7 @@ public enum OPOParse {
     public static func parseBattery(_ bytes: [UInt8]) -> BatteryStatus? {
         // Battery responses are vendor frames:
         // AA .. .. .. CAT=0x06 SUB=0x81 CMD=0x25 ...
-        guard bytes.count >= 12 else { return nil }
+        guard bytes.count >= 11 else { return nil }
         guard bytes.first == 0xAA else { return nil }
         guard bytes[4] == 0x06, bytes[5] == 0x81, bytes[6] == 0x25 else { return nil }
 
@@ -236,33 +242,40 @@ public enum OPOParse {
     }
 
     public static func parseANCModeByte(_ bytes: [UInt8]) -> UInt8? {
-        // We treat packets as ANC status only when they match known vendor ANC shapes.
-        // Avoids mis-classifying unrelated frames that just happen to contain 0x01/0x02/0x04.
         guard bytes.count >= 8 else { return nil }
         guard bytes.first == 0xAA else { return nil }
-        guard bytes[4] == 0x04 else { return nil }
-        let sub = bytes[5]
-        switch sub {
-        case 0x02:
-            // ANC push-state frames observed during earbud/phone toggles tend to end with:
-            // ... 03 01 01 <STATE>
-            // Many other CAT=0x04 SUB=0x02 frames are telemetry and must be ignored.
-            guard bytes.count >= 12 else { return nil }
-            let n = bytes.count
-            guard bytes[n - 4] == 0x03, bytes[n - 3] == 0x01, bytes[n - 2] == 0x01 else { return nil }
-            return bytes[n - 1]
 
-        case 0x81:
-            // Response frames to queries: prefer the "set-like" tail marker:
-            // ... 03 00 01 01 <MODE>
-            for i in 6..<(bytes.count - 4) {
-                if bytes[i] == 0x03, bytes[i + 1] == 0x00, bytes[i + 2] == 0x01, bytes[i + 3] == 0x01 {
-                    return bytes[i + 4]
+        // Some firmwares pack multiple AA frames in a single BLE packet notification.
+        // Traverse all AA frames looking for ANC mode status markers.
+        var i = 0
+        while i < bytes.count {
+            if bytes[i] == 0xAA && i + 1 < bytes.count {
+                let len = Int(bytes[i + 1])
+                let frameEnd = min(bytes.count, i + 4 + len)
+                let frame = Array(bytes[i..<frameEnd])
+                if frame.count >= 8 && frame[4] == 0x04 {
+                    let sub = frame[5]
+                    if sub == 0x02 {
+                        // ANC push-state marker: ... 03 01 01 <STATE>
+                        for j in 6..<(frame.count - 3) {
+                            if frame[j] == 0x03, frame[j + 1] == 0x01, frame[j + 2] == 0x01 {
+                                return frame[j + 3]
+                            }
+                        }
+                    } else if sub == 0x81 {
+                        // Response frames to queries: ... 03 00 01 01 <MODE>
+                        for j in 6..<(frame.count - 4) {
+                            if frame[j] == 0x03, frame[j + 1] == 0x00, frame[j + 2] == 0x01, frame[j + 3] == 0x01 {
+                                return frame[j + 4]
+                            }
+                        }
+                    }
                 }
+                i = max(i + 1, frameEnd)
+            } else {
+                i += 1
             }
-            return nil
-        default:
-            return nil
         }
+        return nil
     }
 }

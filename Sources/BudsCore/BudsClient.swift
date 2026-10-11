@@ -423,7 +423,12 @@ public final class BudsClientImpl: NSObject, BudsClient {
 
     private func startScanOrRetrieve() {
         guard let central else { return }
-        let retrieve = central.retrieveConnectedPeripherals(withServices: [CBUUID(string: OPOProtocol.service079A)])
+        let targetServiceUUIDs = [
+            CBUUID(string: OPOProtocol.service079A),
+            CBUUID(string: OPOProtocol.service08A4),
+            CBUUID(string: OPOProtocol.serviceFE2C)
+        ]
+        let retrieve = central.retrieveConnectedPeripherals(withServices: targetServiceUUIDs)
         if let first = retrieve.first {
             peripheral = first
             first.delegate = self
@@ -753,9 +758,9 @@ extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurre
             let serviceUUID = service.uuid.uuidString.uppercased()
             let is079C = serviceUUID == "0000079C-D102-11E1-9B23-00025B00A5A5"
 
-            if uuid == OPOProtocol.write079A {
+            if uuid == OPOProtocol.write079A || uuid == OPOProtocol.write08A4 {
                 write079A = ch
-            } else if uuid == OPOProtocol.notify079A {
+            } else if uuid == OPOProtocol.notify079A || uuid == OPOProtocol.notify08A4 {
                 notify079A = ch
             }
 
@@ -801,7 +806,7 @@ extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurre
         if debugEnabled { print("[RX] \(characteristic.uuid.uuidString): \(hex)") }
 
         // Battery (strict: CAT=0x06 SUB=0x81 CMD=0x25)
-        if bytes.count >= 12, bytes[safe: 4] == 0x06, bytes[safe: 5] == 0x81, bytes[safe: 6] == 0x25 {
+        if bytes.count >= 11, bytes[safe: 4] == 0x06, bytes[safe: 5] == 0x81, bytes[safe: 6] == 0x25 {
             if let b = OPOParse.parseBattery(bytes) {
                 battery = b
                 batterySeq &+= 1
@@ -869,13 +874,9 @@ extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurre
             // 1) Push-status mapping (observed)
             if sub == 0x02 {
                 let pushMode: ANCMode? = {
-                    // Observed on your buds for ANC push-state frames (earbud long-press):
-                    // - 0x10 = ANC On
-                    // - 0x04 = Transparency
-                    // - 0x01 = Off (typically only via phone/app)
                     switch raw {
-                    case 0x10: return .on
-                    case 0x04: return .transparency
+                    case 0x08, 0x04, 0x10: return .on
+                    case 0x02: return .transparency
                     case 0x01: return .off
                     default: return nil
                     }
