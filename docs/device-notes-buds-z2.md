@@ -25,14 +25,14 @@ The earbuds require the standard handshake before accepting commands:
 
 ## ANC modes and wire values
 
-The OnePlus Buds Z2 firmware defines four distinct states:
+The OnePlus Buds Z2 firmware defines these states:
 
 | Mode | Wire byte | Packet tail | Notes |
 | :--- | :---: | :--- | :--- |
 | Off | `0x01` | `... 01 01 01` | Passthrough, no noise control |
 | Transparency | `0x02` | `... 01 01 02` | Ambient sound |
-| Noise cancellation | `0x03` | `... 01 01 03` | Mild noise cancellation |
-| Max noise cancellation | `0x08` (or `0x04`) | `... 01 01 08` | Full noise cancellation |
+| Noise cancellation | `0x04` | `... 01 01 04` | Normal noise cancellation |
+| Max noise cancellation | `0x08` | `... 01 01 08` | Max noise cancellation |
 
 ### Push notifications and gestures
 
@@ -40,6 +40,7 @@ When cycling modes using touch-and-hold gestures configured in HeyMelody:
 
 - Transparency reports `AA 0B 00 00 04 02 <seq> 04 00 03 01 01 02`
 - Max noise cancellation reports `AA 0B 00 00 04 02 <seq> 04 00 03 01 01 08`
+- Normal noise cancellation reports `AA 0B 00 00 04 02 <seq> 04 00 03 01 01 04`
 - Writing `0x08` to `00000001` activates max noise cancellation and returns `AA 08 00 00 04 84 42 01 00 00`.
 
 ### Multi-frame packet concatenation
