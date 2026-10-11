@@ -20,14 +20,17 @@ final class AppModel: ObservableObject {
 
     @Published var lastOperation: OperationEvent?
     @Published var lastError: String?
+    @Published var deviceName: String?
 
     static let lowBatteryThreshold = 20
+    private static let deviceNameKey = "buds.lastDeviceName"
     private static let caseCachePercentKey = "buds.caseBatteryPercent"
     private static let caseCacheTimestampKey = "buds.caseBatteryTimestamp"
     private static let caseCacheMaxAge: TimeInterval = 12 * 60 * 60 // 12h
 
     init(client: BudsClient = BudsClientImpl()) {
         self.client = client
+        self.deviceName = UserDefaults.standard.string(forKey: Self.deviceNameKey)
         client.start()
 
         eventTask = Task { [weak self] in
@@ -166,6 +169,22 @@ final class AppModel: ObservableObject {
             connection = s
             if case .connected = s {
                 lastError = nil
+            }
+            let detectedName: String? = {
+                switch s {
+                case .connecting(let name),
+                     .discovering(let name),
+                     .authenticating(let name),
+                     .connected(let name),
+                     .reconnecting(let name):
+                    return name
+                default:
+                    return nil
+                }
+            }()
+            if let name = detectedName, !name.isEmpty {
+                deviceName = name
+                UserDefaults.standard.set(name, forKey: Self.deviceNameKey)
             }
             // New/transitioning connection state: drop ANC so we don't display stale mode.
             switch s {

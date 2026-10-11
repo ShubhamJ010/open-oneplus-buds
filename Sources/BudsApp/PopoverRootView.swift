@@ -28,87 +28,109 @@ struct PopoverRootView: View {
 private struct HeaderCardView: View {
     @EnvironmentObject var model: AppModel
 
-    var statusText: String {
+    var deviceTitle: String {
+        if let name = model.deviceName, !name.isEmpty {
+            return name
+        }
+        return "Buds"
+    }
+
+    var connectionSubtitle: String {
         switch model.connection {
-        case .idle: return "Idle"
-        case .bluetoothOff: return "Bluetooth Off"
-        case .bluetoothUnauthorized: return "Bluetooth Permission Needed"
-        case .bluetoothUnsupported: return "Bluetooth Unsupported"
-        case .bluetoothResetting: return "Bluetooth Resetting"
-        case .scanning: return "Looking for Buds…"
-        case .connecting(let name): return name.map { "Connecting · \($0)" } ?? "Connecting…"
-        case .discovering: return "Discovering"
-        case .authenticating: return "Authenticating"
-        case .connected(let name): return name.map { "Connected · \($0)" } ?? "Connected"
-        case .reconnecting: return "Reconnecting"
-        case .failed(let msg): return "Failed: \(msg)"
+        case .idle:
+            return "Disconnected"
+        case .bluetoothOff:
+            return "Bluetooth Off"
+        case .bluetoothUnauthorized:
+            return "Permission Needed"
+        case .bluetoothUnsupported:
+            return "Bluetooth Unsupported"
+        case .bluetoothResetting:
+            return "Bluetooth Resetting…"
+        case .scanning:
+            return "Searching…"
+        case .connecting:
+            return "Connecting…"
+        case .discovering:
+            return "Discovering…"
+        case .authenticating:
+            return "Authenticating…"
+        case .connected:
+            return "Connected"
+        case .reconnecting:
+            return "Reconnecting…"
+        case .failed(let msg):
+            return "Failed: \(msg)"
         }
     }
 
-    var ancLabel: String {
-        guard let anc = model.anc else { return "Noise Control" }
-        switch anc {
-        case .on: return "Noise Cancellation"
-        case .transparency: return "Transparency"
-        case .off: return "Off"
+    var isReconnecting: Bool {
+        switch model.connection {
+        case .scanning, .connecting, .discovering, .authenticating, .reconnecting:
+            return true
+        default:
+            return false
         }
-    }
-
-    var batterySummary: String {
-        guard let total = model.displayBattery?.totalWeightedPercent else { return "--" }
-        return "\(total)%"
     }
 
     var body: some View {
         GlassCard {
-            HStack(alignment: .center, spacing: 12) {
-                Image(systemName: iconName)
-                    .renderingMode(.template)
-                    .symbolRenderingMode(.hierarchical)
-                    .font(.system(size: 20, weight: .semibold))
+            VStack(alignment: .leading, spacing: 10) {
+                HStack(alignment: .center, spacing: 14) {
+                    Image(systemName: iconName)
+                        .renderingMode(.template)
+                        .symbolRenderingMode(.hierarchical)
+                        .font(.system(size: 24, weight: .medium))
+                        .frame(width: 32, height: 32)
+                        .foregroundStyle(isConnected ? Color.primary : Color.secondary)
 
-                VStack(alignment: .leading, spacing: 4) {
-                    Text("Buds")
-                        .font(Typography.title)
-                    Text(statusText)
-                        .font(Typography.subtitle)
-                        .foregroundStyle(.secondary)
-                        .lineLimit(1)
-                }
+                    VStack(alignment: .leading, spacing: 3) {
+                        Text(deviceTitle)
+                            .font(Typography.title)
+                            .lineLimit(1)
 
-                Spacer(minLength: 0)
+                        HStack(spacing: 6) {
+                            Circle()
+                                .fill(statusIndicatorColor)
+                                .frame(width: 7, height: 7)
 
-                VStack(alignment: .trailing, spacing: 4) {
-                    Text(ancLabel)
-                        .font(Typography.subtitle.weight(.semibold))
-                        .lineLimit(1)
-                    Label {
-                        Text(batterySummary)
-                            .font(Typography.subtitle.weight(.semibold))
-                            .monospacedDigit()
-                    } icon: {
-                        Image(systemName: "battery.100percent")
-                            .symbolRenderingMode(.hierarchical)
-                            .foregroundStyle(.secondary)
+                            Text(connectionSubtitle)
+                                .font(Typography.subtitle)
+                                .foregroundStyle(.secondary)
+                                .lineLimit(1)
+                        }
                     }
-                    .labelStyle(.titleAndIcon)
-                    .foregroundStyle(.secondary)
+
+                    Spacer(minLength: 12)
+
+                    Button {
+                        model.reconnect()
+                    } label: {
+                        Image(systemName: "arrow.triangle.2.circlepath")
+                            .font(.system(size: 13, weight: .semibold))
+                            .rotationEffect(.degrees(isReconnecting ? 360 : 0))
+                            .animation(isReconnecting ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: isReconnecting)
+                    }
+                    .buttonStyle(.glass)
+                    .help("Reconnect")
+                    .accessibilityLabel("Reconnect")
+                }
+
+                if shouldShowNotConnected {
+                    StatusChip(text: notConnectedText, kind: .failure)
+                        .padding(.top, 2)
+                }
+
+                if needsBluetoothHelp {
+                    HStack {
+                        Spacer()
+                        Button("Open Bluetooth Privacy") { openBluetoothPrivacy() }
+                            .buttonStyle(.glass)
+                    }
+                    .padding(.top, 2)
                 }
             }
-
-            if shouldShowNotConnected {
-                StatusChip(text: notConnectedText, kind: .failure)
-                    .padding(.top, 10)
-            }
-
-            if needsBluetoothHelp {
-                HStack {
-                    Spacer()
-                    Button("Open Bluetooth Privacy") { openBluetoothPrivacy() }
-                        .buttonStyle(.glass)
-                }
-                .padding(.top, 10)
-            }
+            .padding(.vertical, 4)
         }
         .frame(maxWidth: .infinity, alignment: .leading)
     }
@@ -116,6 +138,19 @@ private struct HeaderCardView: View {
     private var isConnected: Bool {
         if case .connected = model.connection { return true }
         return false
+    }
+
+    private var statusIndicatorColor: Color {
+        switch model.connection {
+        case .connected:
+            return .green
+        case .connecting, .discovering, .authenticating, .reconnecting, .scanning:
+            return .blue
+        case .bluetoothOff, .bluetoothUnauthorized, .bluetoothUnsupported, .failed:
+            return .red
+        case .idle, .bluetoothResetting:
+            return .secondary
+        }
     }
 
     private var iconName: String {
@@ -234,12 +269,6 @@ private struct FooterView: View {
 
     var body: some View {
         HStack {
-            Button {
-                model.reconnect()
-            } label: {
-                Label("Reconnect", systemImage: "arrow.triangle.2.circlepath")
-            }
-            .buttonStyle(.glassProminent)
             Spacer()
             Button("Quit") { model.quit() }
                 .buttonStyle(.glass)
@@ -248,29 +277,88 @@ private struct FooterView: View {
 }
 
 private struct MetricPill: View {
+    @Environment(\.colorScheme) private var colorScheme
     let metric: IconKit.BatteryMetric
     let title: String
     let value: String
 
+    @State private var isHovered = false
+    @State private var hoverLocation: CGPoint = .zero
+
     var body: some View {
-        VStack(alignment: .center, spacing: 5) {
+        let shape = RoundedRectangle(cornerRadius: 14, style: .continuous)
+        VStack(alignment: .center, spacing: 6) {
             IconKit.batteryIcon(for: metric)
                 .symbolRenderingMode(.hierarchical)
                 .foregroundStyle(.secondary)
-                .font(.system(size: 18, weight: .semibold))
-                .frame(width: 20, height: 20)
+                .font(.system(size: 19, weight: .semibold))
+                .frame(width: 22, height: 22)
             Text(title)
-                .font(.caption2.weight(.semibold))
+                .font(.caption2.weight(.medium))
                 .foregroundStyle(.secondary)
             Text(value)
-                .font(Typography.metricValue)
+                .font(.callout.weight(.semibold))
+                .foregroundStyle(.secondary)
                 .monospacedDigit()
         }
-        .padding(.vertical, 10)
-        .padding(.horizontal, 10)
+        .frame(maxWidth: .infinity)
+        .padding(.vertical, 12)
+        .padding(.horizontal, 6)
         .background {
-            RoundedRectangle(cornerRadius: 12, style: .continuous)
-                .fill(.primary.opacity(0.06))
+            GeometryReader { geo in
+                let size = geo.size
+                ZStack {
+                    // Base button fill elevated subtly above the card
+                    shape
+                        .fill(Color.white.opacity(colorScheme == .dark ? 0.055 : 0.08))
+
+                    // Hover glow: specular radial sheen following cursor
+                    if isHovered {
+                        let center = hoverLocation == .zero
+                            ? CGPoint(x: size.width / 2, y: size.height / 2)
+                            : hoverLocation
+
+                        RadialGradient(
+                            colors: [
+                                Color.white.opacity(colorScheme == .dark ? 0.22 : 0.30),
+                                Color.white.opacity(colorScheme == .dark ? 0.08 : 0.12),
+                                .clear
+                            ],
+                            center: UnitPoint(
+                                x: center.x / max(size.width, 1),
+                                y: center.y / max(size.height, 1)
+                            ),
+                            startRadius: 0,
+                            endRadius: max(size.width, size.height) * 0.75
+                        )
+                        .clipShape(shape)
+                        .transition(.opacity.animation(.easeInOut(duration: 0.15)))
+                    }
+
+                    // Delicate perimeter stroke
+                    shape
+                        .strokeBorder(
+                            Color.white.opacity(isHovered ? 0.22 : 0.08),
+                            lineWidth: 1
+                        )
+                }
+            }
+        }
+        .contentShape(shape)
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+                withAnimation(.easeOut(duration: 0.12)) {
+                    isHovered = true
+                    hoverLocation = location
+                }
+            case .ended:
+                withAnimation(.easeOut(duration: 0.2)) {
+                    isHovered = false
+                    hoverLocation = .zero
+                }
+            }
         }
     }
 }
+
