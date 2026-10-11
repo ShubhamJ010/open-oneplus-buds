@@ -4,15 +4,29 @@ import AppKit
 
 struct PopoverRootView: View {
     @EnvironmentObject var model: AppModel
+    @State private var isQuitHovered = false
+    @State private var quitHoverLocation: CGPoint = .zero
+    @State private var quitSize: CGSize = .zero
 
     var body: some View {
-        GlassEffectContainer(spacing: 12) {
-            VStack(spacing: 12) {
-                HeaderCardView()
-                ANCCardView()
-                BatteryCardView()
-                FooterView()
+        VStack(spacing: 12) {
+            GlassEffectContainer(spacing: 12) {
+                VStack(spacing: 12) {
+                    HeaderCardView()
+                    ANCCardView()
+                    BatteryCardView(
+                        isQuitHovered: isQuitHovered,
+                        quitHoverLocation: quitHoverLocation,
+                        quitSize: quitSize
+                    )
+                }
             }
+
+            QuitSectionCard(
+                isHovered: $isQuitHovered,
+                hoverLocation: $quitHoverLocation,
+                cardSize: $quitSize
+            )
         }
         .padding(14)
         .frame(width: 360)
@@ -224,6 +238,29 @@ private struct ANCCardView: View {
 
 private struct BatteryCardView: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.colorScheme) private var colorScheme
+    var isQuitHovered: Bool = false
+    var quitHoverLocation: CGPoint = .zero
+    var quitSize: CGSize = .zero
+
+    private let cardShape = RoundedRectangle(cornerRadius: 16, style: .continuous)
+
+    /// Computes proximity factor (0.0 to 1.0) where 1.0 means cursor is right at the top edge
+    /// of the Quit button (closest to the Battery section), and 0.0 is at the bottom of Quit.
+    private var proximityFactor: Double {
+        guard isQuitHovered, quitSize.height > 0 else { return 0.0 }
+        let normalizedY = max(0.0, min(1.0, Double(quitHoverLocation.y / quitSize.height)))
+        // Invert Y so top edge (closest to battery) is 1.0, bottom edge is 0.0
+        let rawCloseness = 1.0 - normalizedY
+        // Smooth non-linear curve to feel natural and responsive
+        return 0.35 + 0.65 * pow(rawCloseness, 1.2)
+    }
+
+    /// Normalized horizontal alignment (0.0 to 1.0) corresponding to the cursor's X position in the Quit button
+    private var normalizedX: Double {
+        guard quitSize.width > 0 else { return 0.5 }
+        return max(0.0, min(1.0, Double(quitHoverLocation.x / quitSize.width)))
+    }
 
     var body: some View {
         GlassCard {
@@ -260,21 +297,202 @@ private struct BatteryCardView: View {
                 }
             }
         }
+        .overlay {
+            // Radial edge highlight along the bottom stroke that tracks cursor X position
+            // and brightens as cursor nears the top edge of Quit
+            if isQuitHovered {
+                GeometryReader { geo in
+                    let w = max(geo.size.width, 1)
+                    let factor = proximityFactor
+                    let strokeIntensity = (colorScheme == .dark ? 0.90 : 0.75) * factor
+
+                    cardShape
+                        .stroke(
+                            AngularGradient(
+                                stops: [
+                                    .init(color: .clear, location: 0.0),
+                                    .init(color: Color(red: 0.98, green: 0.35, blue: 0.35).opacity(strokeIntensity), location: 0.5),
+                                    .init(color: .clear, location: 1.0)
+                                ],
+                                center: .bottom,
+                                startAngle: .degrees(0),
+                                endAngle: .degrees(180)
+                            ),
+                            lineWidth: 1
+                        )
+                        .mask {
+                            // Focus stroke along the bottom edge where the radial leak touches
+                            RadialGradient(
+                                colors: [
+                                    Color.white,
+                                    Color.white.opacity(0.8),
+                                    Color.white.opacity(0.2),
+                                    .clear
+                                ],
+                                center: UnitPoint(x: normalizedX, y: 1.0),
+                                startRadius: 0,
+                                endRadius: max(w * 0.45, 120)
+                            )
+                        }
+                }
+                .transition(.opacity)
+            }
+        }
+        .background {
+            if isQuitHovered {
+                // Radial ambient light bleed: origin tracks cursor X along bottom edge,
+                // and intensity scales up smoothly as mouse gets closer to the battery section
+                GeometryReader { geo in
+                    let w = max(geo.size.width, 1)
+                    let factor = proximityFactor
+                    let peakOpacity = (colorScheme == .dark ? 0.22 : 0.16) * factor
+                    let midOpacity = peakOpacity * 0.45
+
+                    RadialGradient(
+                        colors: [
+                            Color(red: 0.98, green: 0.30, blue: 0.30).opacity(peakOpacity),
+                            Color(red: 0.98, green: 0.35, blue: 0.35).opacity(midOpacity),
+                            .clear
+                        ],
+                        center: UnitPoint(x: normalizedX, y: 1.05),
+                        startRadius: 0,
+                        endRadius: max(w * 0.55, 160)
+                    )
+                    .clipShape(cardShape)
+                }
+                .transition(.opacity)
+            }
+        }
+        .animation(.spring(response: 0.28, dampingFraction: 0.82), value: isQuitHovered)
         .frame(maxWidth: .infinity, alignment: .leading)
     }
 }
 
-private struct FooterView: View {
+private struct QuitSectionCard: View {
     @EnvironmentObject var model: AppModel
+    @Environment(\.colorScheme) private var colorScheme
+
+    @Binding var isHovered: Bool
+    @Binding var hoverLocation: CGPoint
+    @Binding var cardSize: CGSize
+
+    private let buttonCornerRadius: CGFloat = 16
 
     var body: some View {
-        HStack {
-            Spacer()
-            Button("Quit") { model.quit() }
-                .buttonStyle(.glass)
+        let shape = RoundedRectangle(cornerRadius: buttonCornerRadius, style: .continuous)
+
+        VStack {
+            Button {
+                model.quit()
+            } label: {
+                VStack(spacing: 5) {
+                    HStack(spacing: 9) {
+                        Image(systemName: "power")
+                            .font(.system(size: 17, weight: .medium))
+                        Text("Quit completely")
+                            .font(.system(size: 15, weight: .semibold))
+                    }
+                    .foregroundStyle(isHovered ? Color.white : Color.primary)
+
+                    if isHovered {
+                        Text("All features and background connection will be disabled.")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(Color.white.opacity(0.92))
+                            .multilineTextAlignment(.center)
+                            .lineLimit(2)
+                            .padding(.horizontal, 16)
+                            .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .bottom)))
+                    }
+                }
+                .frame(maxWidth: .infinity)
+                .padding(.vertical, isHovered ? 14 : 13)
+                .background {
+                    GeometryReader { geo in
+                        let size = geo.size
+                        let center = hoverLocation == .zero
+                            ? CGPoint(x: size.width / 2, y: size.height / 2)
+                            : hoverLocation
+
+                        ZStack {
+                            // Unhovered button: dark tinted card matching screenshot
+                            shape
+                                .fill(Color.white.opacity(colorScheme == .dark ? 0.07 : 0.09))
+
+                            // Hovered button: vivid coral-red matching screenshot
+                            if isHovered {
+                                shape
+                                    .fill(
+                                        LinearGradient(
+                                            colors: [
+                                                Color(red: 0.98, green: 0.35, blue: 0.35),
+                                                Color(red: 0.90, green: 0.25, blue: 0.25)
+                                            ],
+                                            startPoint: .top,
+                                            endPoint: .bottom
+                                        )
+                                    )
+                                    .transition(.opacity)
+
+                                // Specular radial highlight following mouse
+                                RadialGradient(
+                                    colors: [
+                                        Color.white.opacity(0.38),
+                                        Color.white.opacity(0.12),
+                                        .clear
+                                    ],
+                                    center: UnitPoint(
+                                        x: max(0, min(1, center.x / max(size.width, 1))),
+                                        y: max(0, min(1, center.y / max(size.height, 1)))
+                                    ),
+                                    startRadius: 0,
+                                    endRadius: max(size.width, size.height) * 0.75
+                                )
+                                .clipShape(shape)
+                                .transition(.opacity)
+                            }
+
+                            // Clean outer border stroke
+                            shape
+                                .strokeBorder(
+                                    isHovered
+                                        ? Color.white.opacity(0.24)
+                                        : Color.white.opacity(colorScheme == .dark ? 0.12 : 0.16),
+                                    lineWidth: 1
+                                )
+                        }
+                        .onAppear {
+                            cardSize = size
+                        }
+                        .onChange(of: size) { _, newSize in
+                            cardSize = newSize
+                        }
+                    }
+                }
+                .clipShape(shape)
+                .contentShape(shape)
+            }
+            .buttonStyle(.plain)
+            .onContinuousHover { phase in
+                switch phase {
+                case .active(let location):
+                    hoverLocation = location
+                    if !isHovered {
+                        withAnimation(.spring(response: 0.28, dampingFraction: 0.80)) {
+                            isHovered = true
+                        }
+                    }
+                case .ended:
+                    withAnimation(.spring(response: 0.24, dampingFraction: 0.82)) {
+                        isHovered = false
+                        hoverLocation = .zero
+                    }
+                }
+            }
         }
+        .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .bottom)
     }
 }
+
 
 private struct MetricPill: View {
     @Environment(\.colorScheme) private var colorScheme
