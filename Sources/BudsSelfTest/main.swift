@@ -1,4 +1,5 @@
 import Foundation
+import CoreBluetooth
 import BudsCore
 
 func assert(_ condition: @autoclosure () -> Bool, _ message: String) {
@@ -82,6 +83,12 @@ assert(b?.case == 60, "Battery case parse")
 assert(b?.averageLR == 81, "Battery average LR")
 assert(b?.totalWeightedPercent == 64, "Battery weighted total percent")
 
+// Single-earbud battery fixture (observed on Buds Z2):
+// AA 0B 00 00 06 81 25 04 00 00 01 01 5A (count=1, id=1, 90%)
+let batZ2 = [UInt8]([0xAA, 0x0B, 0x00, 0x00, 0x06, 0x81, 0x25, 0x04, 0x00, 0x00, 0x01, 0x01, 0x5A])
+let bZ2 = OPOParse.parseBattery(batZ2)
+assert(bZ2?.left == 90, "Buds Z2 battery parse left == 90")
+
 // ANC push fixture (CAT=0x04 SUB=0x02): parser returns raw last byte (may be non-classic)
 let ancPush = [UInt8](arrayLiteral: 0xAA, 0x0B, 0x00, 0x00, 0x04, 0x02, 0x10, 0x04, 0x00, 0x03, 0x01, 0x01, 0x10)
 assert(OPOParse.parseANCModeByte(ancPush) == 0x10, "ANC push returns raw last byte")
@@ -101,5 +108,68 @@ assert(e != nil, "EQ parse non-nil")
 assert(e?.presets.count == 3, "EQ presets count")
 assert(e?.presets.first(where: { $0.id == 1 })?.bands.count == 3, "EQ preset 1 band count")
 assert(e?.presets.first(where: { $0.id == 3 })?.bands.first(where: { $0.id == 2 })?.value == 101, "EQ preset 3 band 2 value")
+
+// BudsDeviceFilter verification
+let nonBudNames = [
+    "SJ's OnePlus 8T",
+    "OnePlus 8T",
+    "OnePlus 9 Pro",
+    "OnePlus 11",
+    "OnePlus 12R",
+    "OnePlus Open",
+    "OnePlus Pad",
+    "OnePlus Pad Go",
+    "OnePlus Watch",
+    "OnePlus Watch 2",
+    "OnePlus TV",
+    "OnePlus Nord",
+    "OnePlus Nord 2T",
+    "OnePlus Nord CE 3",
+    "iPhone 15 Pro",
+    "MacBook Pro",
+    "",
+    "Phone"
+]
+
+for name in nonBudNames {
+    assert(!BudsDeviceFilter.isAudioDeviceName(name), "Device name '\(name)' should not match as buds")
+}
+
+let validBudNames = [
+    "OnePlus Buds",
+    "OnePlus Buds Z2",
+    "OnePlus Buds Pro",
+    "OnePlus Buds Pro 2",
+    "OnePlus Buds Pro 3",
+    "OnePlus Buds 3",
+    "OnePlus Buds V",
+    "OnePlus Buds Ace",
+    "OnePlus Nord Buds",
+    "Nord Buds 2",
+    "OnePlus Nord Buds 2r",
+    "OnePlus Bullets Wireless",
+    "OnePlus Bullets Wireless Z2",
+    "SJ's Buds",
+    "OnePlus Wireless Earphones",
+    "Oppo Enco Buds"
+]
+
+for name in validBudNames {
+    assert(BudsDeviceFilter.isAudioDeviceName(name), "Device name '\(name)' should match as buds")
+}
+
+// Test matchesAdvertisement with Manufacturer Data (Company ID 0x072F)
+let mfgData = Data([0x2F, 0x07, 0x14, 0x10, 0x06, 0x3F, 0x00, 0x01, 0x98, 0x04, 0xED, 0x6F, 0x4B, 0x2A, 0x0F, 0x84, 0x29, 0xC8, 0xC8, 0xBA, 0x01])
+let advDictWithMfg: [String: Any] = [
+    CBAdvertisementDataManufacturerDataKey: mfgData
+]
+assert(BudsDeviceFilter.matchesAdvertisement(peripheralName: nil, advertisementData: advDictWithMfg), "Must match via OnePlus/Oppo manufacturer ID")
+
+// Test advertisement battery parsing (0xC8 = 200 -> 100%, 0xBA = 186 -> 93%)
+let advBat = BudsDeviceFilter.parseAdvertisementBattery(advDictWithMfg)
+assert(advBat != nil, "Must parse advertisement battery")
+assert(advBat?.left == 100, "Left battery must decode to 100")
+assert(advBat?.right == 100, "Right battery must decode to 100")
+assert(advBat?.case == 93, "Case battery must decode to 93")
 
 print("[OK] BudsSelfTest passed")

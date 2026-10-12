@@ -20,15 +20,32 @@ final class AppModel: ObservableObject {
 
     @Published var lastOperation: OperationEvent?
     @Published var lastError: String?
+    @Published var deviceName: String?
+    @Published var logLines: [String] = []
 
     static let lowBatteryThreshold = 20
+    private static let deviceNameKey = "buds.lastDeviceName"
     private static let caseCachePercentKey = "buds.caseBatteryPercent"
     private static let caseCacheTimestampKey = "buds.caseBatteryTimestamp"
     private static let caseCacheMaxAge: TimeInterval = 12 * 60 * 60 // 12h
+    private var rightClickMonitor: MenuBarRightClickMonitor?
 
     init(client: BudsClient = BudsClientImpl()) {
         self.client = client
+        let cached = UserDefaults.standard.string(forKey: Self.deviceNameKey)
+        if let cached, BudsDeviceFilter.isAudioDeviceName(cached) {
+            self.deviceName = cached
+        } else {
+            self.deviceName = nil
+            UserDefaults.standard.removeObject(forKey: Self.deviceNameKey)
+        }
         client.start()
+
+        rightClickMonitor = MenuBarRightClickMonitor { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.disconnect()
+            }
+        }
 
         eventTask = Task { [weak self] in
             guard let self else { return }
@@ -50,7 +67,10 @@ final class AppModel: ObservableObject {
 
         client.setLiveUpdatesEnabled(true)
 
-        guard case .connected = connection else { return }
+        guard case .connected = connection else {
+            client.reconnectNow()
+            return
+        }
 
         let now = Date()
         let batteryFresh = (battery?.lastUpdated).map { now.timeIntervalSince($0) < 5 * 60 } ?? false
@@ -102,6 +122,13 @@ final class AppModel: ObservableObject {
     func reconnect() {
         lastError = nil
         client.reconnectNow()
+    }
+
+    /// Disconnect from the earbuds over Bluetooth Classic and BLE GATT, releasing
+    /// the ACL link so the earbuds automatically fall back to the user's paired phone.
+    func disconnect() {
+        lastError = nil
+        client.disconnectNow()
     }
 
     func quit() {
@@ -164,8 +191,14 @@ final class AppModel: ObservableObject {
         switch ev {
         case .connection(let s):
             connection = s
-            if case .connected = s {
+            if case .connected(let name) = s {
                 lastError = nil
+                if let name, BudsDeviceFilter.isAudioDeviceName(name) {
+                    deviceName = name
+                    UserDefaults.standard.set(name, forKey: Self.deviceNameKey)
+                }
+            } else if let name = s.deviceName, deviceName == nil, BudsDeviceFilter.isAudioDeviceName(name) {
+                deviceName = name
             }
             // New/transitioning connection state: drop ANC so we don't display stale mode.
             switch s {
@@ -173,6 +206,13 @@ final class AppModel: ObservableObject {
                 anc = nil
             default:
                 break
+            }
+            if case .scanning = s {
+                lastError = nil
+            } else if case .reconnecting = s {
+                lastError = nil
+            } else if case .connecting = s {
+                lastError = nil
             }
             switch s {
             case .bluetoothOff:
@@ -202,6 +242,14 @@ final class AppModel: ObservableObject {
             }
         case .error(let err):
             lastError = err.message
+        case .log(let msg):
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss"
+            let time = formatter.string(from: Date())
+            logLines.append("[\(time)] \(msg)")
+            if logLines.count > 50 {
+                logLines.removeFirst(logLines.count - 50)
+            }
         }
     }
 }

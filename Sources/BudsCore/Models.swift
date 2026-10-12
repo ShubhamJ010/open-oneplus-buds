@@ -13,6 +13,19 @@ public enum ConnectionState: Equatable, Sendable {
     case connected(name: String?)
     case reconnecting(name: String?)
     case failed(message: String)
+
+    public var deviceName: String? {
+        switch self {
+        case .connecting(let name),
+             .discovering(let name),
+             .authenticating(let name),
+             .connected(let name),
+             .reconnecting(let name):
+            return name
+        default:
+            return nil
+        }
+    }
 }
 
 public enum ANCMode: String, CaseIterable, Codable, Equatable, Sendable {
@@ -178,4 +191,5 @@ public enum BudsEvent: Sendable {
     case eq(EQStatus)
     case operation(OperationEvent)
     case error(UserFacingError)
+    case log(String)
 }

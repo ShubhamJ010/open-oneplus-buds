@@ -51,7 +51,9 @@ class NordBudsCLI: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         }
         
         let retrieve = central.retrieveConnectedPeripherals(withServices: [
-            CBUUID(string: "0000079A-D102-11E1-9B23-00025B00A5A5")
+            CBUUID(string: "0000079A-D102-11E1-9B23-00025B00A5A5"),
+            CBUUID(string: "000008A4-0000-1000-8000-00805F9B34FB"),
+            CBUUID(string: "FE2C")
         ])
         
         if !retrieve.isEmpty {
@@ -71,7 +73,7 @@ class NordBudsCLI: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
                        rssi RSSI: NSNumber) {
         
         if let name = peripheral.name, 
-           (name.contains("Nord Buds") || name.contains("OnePlus")) {
+           (name.contains("Nord Buds") || (name.contains("OnePlus") && !name.contains("Phone") && !name.contains("8T"))) {
             print("[FOUND] \(name)")
             self.peripheral = peripheral
             peripheral.delegate = self
@@ -98,15 +100,17 @@ class NordBudsCLI: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
         for char in service.characteristics ?? [] {
             let props = char.properties.rawValue
             
-            if char.uuid.uuidString == "0100079A-D102-11E1-9B23-00025B00A5A5" {
+            if char.uuid.uuidString == "0100079A-D102-11E1-9B23-00025B00A5A5" ||
+               char.uuid.uuidString == "00000001-0000-1000-8000-00805F9B34FB" {
                 cmdChar079A = char
-                print("[+] Found Write Char: 0100079A")
+                print("[+] Found Write Char: \(char.uuid.uuidString)")
             }
             
-            if char.uuid.uuidString == "0200079A-D102-11E1-9B23-00025B00A5A5" {
+            if char.uuid.uuidString == "0200079A-D102-11E1-9B23-00025B00A5A5" ||
+               char.uuid.uuidString == "00000002-0000-1000-8000-00805F9B34FB" {
                 notifyChar079A = char
                 peripheral.setNotifyValue(true, for: char)
-                print("[+] Found Notify Char: 0200079A")
+                print("[+] Found Notify Char: \(char.uuid.uuidString)")
             }
             
             if char.uuid.uuidString == "FE2C123A-8366-4814-8EB0-01DE32100BEA" {
@@ -155,7 +159,23 @@ class NordBudsCLI: NSObject, CBCentralManagerDelegate, CBPeripheralDelegate {
     
     func parseBattery(_ bytes: [UInt8]) {
         print("\n========== BATTERY INFO ==========")
-        if bytes.count >= 16 {
+        if bytes.count >= 11 {
+            let pairCount = Int(bytes[10])
+            var i = 11
+            for _ in 0..<pairCount {
+                if i + 1 < bytes.count {
+                    let id = bytes[i]
+                    let val = bytes[i + 1]
+                    switch id {
+                    case 0x01: print("Left Bud:  \(val)%")
+                    case 0x02: print("Right Bud: \(val)%")
+                    case 0x03: print("Case:      \(val)%")
+                    default:   print("Device \(id): \(val)%")
+                    }
+                    i += 2
+                }
+            }
+        } else if bytes.count >= 16 {
             print("Left Bud:  \(bytes[12])%")
             print("Right Bud: \(bytes[14])%")
             print("Case:     \(bytes[15])%")
