@@ -1,5 +1,6 @@
 import Foundation
 @preconcurrency import CoreBluetooth
+import IOBluetooth
 import OSLog
 
 @MainActor
@@ -31,6 +32,8 @@ public protocol BudsClient: AnyObject {
 public final class BudsClientImpl: NSObject, BudsClient {
 
     public var events: AsyncStream<BudsEvent> { eventStream }
+
+    private static let peripheralUUIDKey = "buds.lastPeripheralUUID"
 
     private let eventStream: AsyncStream<BudsEvent>
     private let eventCont: AsyncStream<BudsEvent>.Continuation
@@ -100,8 +103,12 @@ public final class BudsClientImpl: NSObject, BudsClient {
     }
 
     private var reconnectTask: Task<Void, Never>?
+    private var serviceDiscoveryTimeoutTask: Task<Void, Never>?
+    private var scanWatchdogTask: Task<Void, Never>?
 
     private var didInitialRefreshAfterConnect = false
+    private var sessionReadyTriggered = false
+    private var ioBluetoothNotification: IOBluetoothUserNotification?
 
     // Some devices send responses or telemetry unsolicited. We track a monotonically
     // increasing sequence for each model; query operations wait for the next update.
@@ -127,10 +134,19 @@ public final class BudsClientImpl: NSObject, BudsClient {
         guard central == nil else { return }
         connectionState = .idle
         central = CBCentralManager(delegate: self, queue: .main)
+
+        // Listen for system-level Classic Bluetooth audio connection (e.g. lid open auto-connect)
+        ioBluetoothNotification = IOBluetoothDevice.register(
+            forConnectNotifications: self,
+            selector: #selector(handleIOBluetoothDeviceConnect(_:device:))
+        )
     }
 
     public func stop() {
+        ioBluetoothNotification?.unregister()
+        ioBluetoothNotification = nil
         reconnectTask?.cancel(); reconnectTask = nil
+        serviceDiscoveryTimeoutTask?.cancel(); serviceDiscoveryTimeoutTask = nil
         if let p = peripheral {
             // Best-effort: turn off notifications before disconnecting.
             for ch in notifyChars { p.setNotifyValue(false, for: ch) }
@@ -187,8 +203,13 @@ public final class BudsClientImpl: NSObject, BudsClient {
     public func reconnectNow() {
         enqueue(kind: .reconnect, timeout: .seconds(15), maxRetries: 1) { [weak self] in
             guard let self else { return }
+            self.serviceDiscoveryTimeoutTask?.cancel()
+            self.serviceDiscoveryTimeoutTask = nil
+            self.scanWatchdogTask?.cancel()
+            self.scanWatchdogTask = nil
             self.connectionState = .reconnecting(name: self.peripheral?.name)
             self.authState = .notAuthenticated
+            self.sessionReadyTriggered = false
             if let p = self.peripheral {
                 self.central?.cancelPeripheralConnection(p)
             }
@@ -419,26 +440,82 @@ public final class BudsClientImpl: NSObject, BudsClient {
         }
     }
 
-    // MARK: - BLE Helpers
+    private func log(_ msg: String) {
+        logger.info("\(msg, privacy: .public)")
+        emit(.log(msg))
+        if debugEnabled { print("[Buds] \(msg)") }
+    }
 
     private func startScanOrRetrieve() {
         guard let central else { return }
+        log("Checking Bluetooth (state=\(central.state.rawValue))...")
+        scanWatchdogTask?.cancel()
+        scanWatchdogTask = nil
+
+        let savedUUIDString = UserDefaults.standard.string(forKey: Self.peripheralUUIDKey)
+        let savedName = UserDefaults.standard.string(forKey: "buds.lastDeviceName")
+
+        // 1. Check if already connected to macOS system Bluetooth with vendor audio services
         let targetServiceUUIDs = [
-            CBUUID(string: OPOProtocol.service079A),
             CBUUID(string: OPOProtocol.service08A4),
+            CBUUID(string: OPOProtocol.service079A),
             CBUUID(string: OPOProtocol.serviceFE2C)
         ]
         let retrieve = central.retrieveConnectedPeripherals(withServices: targetServiceUUIDs)
-        if let first = retrieve.first {
+        if let first = retrieve.first(where: { BudsDeviceFilter.isAudioDeviceName($0.name ?? savedName) }) {
+            log("Found system peripheral with audio service: \(first.name ?? "unnamed")")
+            central.stopScan()
             peripheral = first
             first.delegate = self
-            connectionState = .connecting(name: first.name)
+            connectionState = .connecting(name: first.name ?? savedName)
             central.connect(first, options: nil)
             return
         }
 
+        // 2. If known saved buds peripheral is retrieved by identifier
+        if let savedUUIDString, let uuid = UUID(uuidString: savedUUIDString) {
+            let known = central.retrievePeripherals(withIdentifiers: [uuid])
+            if let first = known.first {
+                if first.state == .connected {
+                    log("Found known peripheral connected: \(first.name ?? savedName ?? "unnamed")")
+                    central.stopScan()
+                    peripheral = first
+                    first.delegate = self
+                    let name = first.name ?? savedName
+                    connectionState = .connecting(name: name)
+                    central.connect(first, options: nil)
+                    return
+                } else if first.state == .connecting {
+                    log("Peripheral already connecting, waiting...")
+                    return
+                }
+            }
+        }
+
+        // 3. Keep existing connecting/connected peripheral; only clear if truly disconnected
+        if let p = peripheral, p.state == .disconnected {
+            peripheral = nil
+        }
+
+        log("Scanning for OnePlus Buds...")
         connectionState = .scanning
         central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
+
+        // Duty-cycle: If not found after 10 seconds, pause 3s then repeat via scheduleReconnect
+        scanWatchdogTask = Task { @MainActor [weak self] in
+            do {
+                try await Task.sleep(for: .seconds(10))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            guard let self else { return }
+            if case .scanning = self.connectionState {
+                self.central?.stopScan()
+                self.connectionState = .idle
+                self.scheduleReconnect()
+            }
+        }
     }
 
     private func rememberNotifyChar(_ ch: CBCharacteristic) {
@@ -451,7 +528,7 @@ public final class BudsClientImpl: NSObject, BudsClient {
         reconnectTask = Task { @MainActor [weak self] in
             guard let self else { return }
 
-            let backoff: [Duration] = [.milliseconds(500), .seconds(1), .seconds(2), .seconds(5), .seconds(10)]
+            let backoff: [Duration] = [.seconds(1), .seconds(2), .seconds(3), .seconds(5)]
             var idx = 0
 
             while !Task.isCancelled {
@@ -674,6 +751,26 @@ public final class BudsClientImpl: NSObject, BudsClient {
         _ = reason
         try await waitForSeqChange(current: current, from: from, timeout: timeout)
     }
+
+    /// System-level Classic Bluetooth audio connection listener.
+    /// Fired by IOBluetooth on a background dispatch queue when the case lid opens and macOS
+    /// establishes the A2DP/HFP audio connection. We declare this method as `nonisolated` so
+    /// the Objective-C runtime callback doesn't trip Swift concurrency actor checks, and safely
+    /// hop to `@MainActor` to trigger GATT synchronization.
+    @objc nonisolated private func handleIOBluetoothDeviceConnect(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
+        let name = device.nameOrAddress ?? "unknown"
+        Task { @MainActor [weak self] in
+            guard let self else { return }
+            self.logger.info("IOBluetooth device connected: \(name, privacy: .public)")
+            guard BudsDeviceFilter.isAudioDeviceName(name) else { return }
+            self.log("System audio connected to \(name), initiating Buds sync...")
+            // Only trigger retrieval/reconnect if we are not already connected
+            if case .connected = self.connectionState {
+                return
+            }
+            self.reconnectNow()
+        }
+    }
 }
 
 // MARK: - CBCentralManagerDelegate / CBPeripheralDelegate
@@ -683,6 +780,7 @@ public final class BudsClientImpl: NSObject, BudsClient {
 extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurrency CBPeripheralDelegate {
 
     public func centralManagerDidUpdateState(_ central: CBCentralManager) {
+        logger.info("centralManagerDidUpdateState: \(central.state.rawValue)")
         switch central.state {
         case .poweredOn:
             startScanOrRetrieve()
@@ -705,53 +803,148 @@ extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurre
                                didDiscover peripheral: CBPeripheral,
                                advertisementData: [String: Any],
                                rssi RSSI: NSNumber) {
-        guard let name = peripheral.name else { return }
-        if name.contains("Nord Buds") || name.contains("OnePlus") {
-            central.stopScan()
-            self.peripheral = peripheral
-            peripheral.delegate = self
-            connectionState = .connecting(name: name)
-            central.connect(peripheral, options: nil)
+        let name = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
+        let isKnown = (peripheral.identifier.uuidString == UserDefaults.standard.string(forKey: Self.peripheralUUIDKey))
+        log("Discovered: \(name ?? "unnamed") (RSSI: \(RSSI), isKnown=\(isKnown))")
+        guard isKnown || BudsDeviceFilter.matchesAdvertisement(peripheralName: name, advertisementData: advertisementData) else { return }
+
+        // Opportunistically extract battery status from advertisement frame before GATT handshake finishes
+        if let advBattery = BudsDeviceFilter.parseAdvertisementBattery(advertisementData) {
+            self.battery = advBattery
+            self.batterySeq &+= 1
+            log("Extracted adv battery: L=\(advBattery.left ?? -1)% R=\(advBattery.right ?? -1)% Case=\(advBattery.case ?? -1)%")
         }
+
+        scanWatchdogTask?.cancel()
+        scanWatchdogTask = nil
+        central.stopScan()
+        if let p = self.peripheral, p.identifier != peripheral.identifier {
+            central.cancelPeripheralConnection(p)
+        }
+        self.peripheral = peripheral
+        peripheral.delegate = self
+        let displayName = name ?? UserDefaults.standard.string(forKey: "buds.lastDeviceName")
+        log("Connecting to \(displayName ?? "device")...")
+        connectionState = .connecting(name: displayName)
+        central.connect(peripheral, options: nil)
     }
 
     public func centralManager(_ central: CBCentralManager, didConnect peripheral: CBPeripheral) {
-        connectionState = .discovering(name: peripheral.name)
+        central.stopScan()
+        scanWatchdogTask?.cancel()
+        scanWatchdogTask = nil
+        let displayName = peripheral.name ?? UserDefaults.standard.string(forKey: "buds.lastDeviceName")
+        log("Connected: \(displayName ?? "device") -> discovering GATT services")
+        connectionState = .discovering(name: displayName)
         authState = .notAuthenticated
+        sessionReadyTriggered = false
         write079A = nil
         notify079A = nil
         notifyChars = []
         didInitialRefreshAfterConnect = false
         // New BLE session: drop stale cached state so UI doesn't show old modes as "current".
         ancMode = nil
+
+        serviceDiscoveryTimeoutTask?.cancel()
+        serviceDiscoveryTimeoutTask = Task { @MainActor [weak self, weak peripheral] in
+            do {
+                try await Task.sleep(for: .seconds(8))
+            } catch {
+                return
+            }
+            guard !Task.isCancelled else { return }
+            guard let self, let peripheral else { return }
+            if case .discovering = self.connectionState {
+                self.log("Service discovery timed out for \(peripheral.name ?? "device")")
+                self.central?.cancelPeripheralConnection(peripheral)
+                self.peripheral = nil
+                self.connectionState = .failed(message: "Discovery timed out")
+                self.scheduleReconnect()
+            }
+        }
+
         peripheral.discoverServices(nil)
     }
 
     public func centralManager(_ central: CBCentralManager, didFailToConnect peripheral: CBPeripheral, error: Error?) {
+        log("Failed to connect: \(error?.localizedDescription ?? "unknown error")")
+        serviceDiscoveryTimeoutTask?.cancel()
+        serviceDiscoveryTimeoutTask = nil
+        self.peripheral = nil
         connectionState = .failed(message: "Failed to connect")
         scheduleReconnect()
     }
 
     public func centralManager(_ central: CBCentralManager, didDisconnectPeripheral peripheral: CBPeripheral, error: Error?) {
+        log("Disconnected: \(peripheral.name ?? "device") (\(error?.localizedDescription ?? "clean"))")
+        serviceDiscoveryTimeoutTask?.cancel()
+        serviceDiscoveryTimeoutTask = nil
+        scanWatchdogTask?.cancel()
+        scanWatchdogTask = nil
         authState = .notAuthenticated
+        sessionReadyTriggered = false
         write079A = nil
         notify079A = nil
         notifyChars = []
         didInitialRefreshAfterConnect = false
         lastAuthAt = nil
         ancMode = nil
+        self.peripheral = nil
 
-        connectionState = .reconnecting(name: peripheral.name)
-        scheduleReconnect()
+        let displayName = peripheral.name ?? UserDefaults.standard.string(forKey: "buds.lastDeviceName")
+        connectionState = .reconnecting(name: displayName)
+        startScanOrRetrieve()
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverServices error: Error?) {
-        for service in peripheral.services ?? [] {
+        if let error {
+            logger.error("Service discovery error: \(error.localizedDescription)")
+            serviceDiscoveryTimeoutTask?.cancel()
+            serviceDiscoveryTimeoutTask = nil
+            central?.cancelPeripheralConnection(peripheral)
+            self.peripheral = nil
+            connectionState = .failed(message: "Failed to discover services")
+            scheduleReconnect()
+            return
+        }
+
+        let services = peripheral.services ?? []
+        if services.isEmpty {
+            serviceDiscoveryTimeoutTask?.cancel()
+            serviceDiscoveryTimeoutTask = nil
+            central?.cancelPeripheralConnection(peripheral)
+            self.peripheral = nil
+            connectionState = .failed(message: "No services found")
+            scheduleReconnect()
+            return
+        }
+
+        let hasBudsService = services.contains { s in
+            let u = s.uuid.uuidString.uppercased()
+            return u == OPOProtocol.service079A.uppercased() ||
+                   u == OPOProtocol.service08A4.uppercased()
+        }
+        guard hasBudsService else {
+            logger.info("Connected peripheral is not a OnePlus audio device (missing 079A/08A4 services), disconnecting")
+            serviceDiscoveryTimeoutTask?.cancel()
+            serviceDiscoveryTimeoutTask = nil
+            central?.cancelPeripheralConnection(peripheral)
+            self.peripheral = nil
+            connectionState = .idle
+            scheduleReconnect()
+            return
+        }
+
+        for service in services {
             peripheral.discoverCharacteristics(nil, for: service)
         }
     }
 
     public func peripheral(_ peripheral: CBPeripheral, didDiscoverCharacteristicsFor service: CBService, error: Error?) {
+        if let error {
+            logger.error("Characteristic discovery error for \(service.uuid.uuidString): \(error.localizedDescription)")
+        }
+
         for ch in service.characteristics ?? [] {
             let uuid = ch.uuid.uuidString.uppercased()
             let props = ch.properties
@@ -778,9 +971,23 @@ extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurre
         // Only consider the session "ready" once we have both the write and notify paths.
         // If we start sending queries before 0200079A notifications are enabled, we can miss
         // the response and time out even though the buds replied.
-        if write079A != nil, notify079A != nil {
+        if write079A != nil, notify079A != nil, !sessionReadyTriggered {
+            sessionReadyTriggered = true
+            serviceDiscoveryTimeoutTask?.cancel()
+            serviceDiscoveryTimeoutTask = nil
+            UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: Self.peripheralUUIDKey)
+            log("Session ready: write and notify channels established")
             connectionState = .connected(name: peripheral.name)
             didInitialRefreshAfterConnect = true
+
+            // Send handshake immediately to keep connection alive and receive live state.
+            // Firmwares (like Buds Z2) choke and cleanly drop GATT if duplicate un-serialized HELLO/REGISTER
+            // packets are transmitted simultaneously. We deduplicate with `sessionReadyTriggered` and serialize
+            // the handshake via the operation queue to prevent race conditions.
+            enqueue(kind: .authenticate, timeout: .seconds(8), maxRetries: 0) { [weak self] in
+                guard let self else { return }
+                try await self.ensureAuthenticated()
+            }
         }
     }
 

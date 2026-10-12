@@ -39,6 +39,8 @@ struct PopoverRootView: View {
     }
 }
 
+
+
 private struct HeaderCardView: View {
     @EnvironmentObject var model: AppModel
 

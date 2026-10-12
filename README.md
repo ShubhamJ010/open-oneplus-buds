@@ -1,273 +1,158 @@
-# Cracking OPOv1: Reverse Engineering the OnePlus Buds Protocol
+# Buds: Open OnePlus / OPOv1 Earbuds Controller for macOS
 
-Control your OnePlus Nord Buds 3 Pro ANC modes directly from your Mac — without the HeyMelody app.
+<p align="center">
+  <img src="demo.png" alt="Buds macOS menu bar app" width="720" />
+</p>
 
-**[Read the full reverse engineering story →](https://aasheesh.vercel.app/blog/oneplus-buds)**
-
-![Buds menu bar app screenshot](demo.png)
-
----
-
-## Attribution / Credits
-
-This project is possible because **Aasheesh** reverse engineered the OnePlus/OPOv1 protocol and published the original work (blog + reference implementation).
-
-- Original repo (protocol cracking / CLI groundwork): https://github.com/AasheeshLikePanner/cracked-oneplus-buds
-- Reverse engineering write-up: https://aasheesh.vercel.app/blog/oneplus-buds
-
-The **macOS menu bar app** and ongoing app-level development in this repository is done by **Vedanth**.
+A lightweight, native macOS menu bar application and CLI tool to control Active Noise Cancellation (ANC), Transparency mode, and battery telemetry for OnePlus, Oppo, and Realme earbuds without requiring HeyMelody or an Android device.
 
 ---
 
-## The Problem
+## Highlights
 
-You're working on your laptop. Earbuds connected via Bluetooth. You want to switch from Transparency to ANC mode but the gesture won't work. No problem — you'll just use the official app.
-
-**Oh wait.** There is no desktop app. OnePlus never made one. You need your phone just to change a setting on earbuds you already own.
-
-That's absurd. The hardware link exists — Bluetooth is already connected. But software control? Locked behind a phone app.
-
-So I decided to crack it myself.
+- **Native macOS Menu Bar App**: Built with Swift and SwiftUI, featuring real-time battery status and ANC mode switching in the menu bar.
+- **Direct BLE Hardware Control**: Reverse-engineered implementation of the proprietary OPOv1 protocol over Bluetooth Low Energy.
+- **Zero Background Polling**: Event-driven architecture that only reads state on-demand or during active UI interactions to preserve earbud battery.
+- **Standalone CLI Utility**: Scriptable CLI (`nordbuds.swift`) for headless automation, keyboard shortcuts, or terminal use.
+- **No Xcode Required**: Full build and packaging pipeline powered by Swift Package Manager and lightweight shell scripts.
 
 ---
 
-## How We Cracked It
+## Device Compatibility
 
-### 1. The btsnoop Capture
+Works across devices running the **OPOv1** protocol (`0000079A` / `000008A4` services):
 
-Android lets you enable **Bluetooth HCI snoop logging** in developer options. Every BLE packet between your phone and the earbuds gets captured. I copied that log to my laptop and opened it in Wireshark.
+| Device Family | Confirmed / Supported Models |
+| :--- | :--- |
+| **OnePlus** | OnePlus Nord Buds 3 Pro, OnePlus Buds Z2, Nord Buds 2, Buds Pro / Pro 2, Bullets Wireless Z2 |
+| **Oppo** | Enco X2, Enco Free2 / Free2i, Enco Air3, Enco Air2 Pro |
+| **Realme** | Buds Air 5 Pro, Buds Air 3, Buds Air 2 Pro, Buds T1 |
 
-### 2. Decompiling HeyMelody
-
-The official HeyMelody app has to communicate with the earbuds somehow. I pulled the APK, ran it through **jadx** (Java decompiler), and found the exact Java code that builds ANC commands.
-
-```java
-// Category = 0x04 (ANC), Sub-command = 0x04 (Set)
-// Combined = 1028 = 0x0404
-```
-
-### 3. Finding the Right Service
-
-The earbuds expose multiple BLE GATT services. Most people (including me initially) assumed the **FE2C** service was the main one.
-
-**Wrong.** FE2C is for telemetry and firmware updates. The actual ANC commands go through **`0000079A`** — the OPO (Oppo/OnePlus) protocol service.
-
-### 4. The Write Type Trap
-
-In CoreBluetooth, there are two write types:
-- `.withResponse` — waits for acknowledgment
-- `.withoutResponse` — fire and forget
-
-The earbuds **only** accept `.withoutResponse`. Using `.withResponse` silently fails. No error. No response.
-
-### 5. Authentication Required
-
-You can't just send an ANC command. First you must:
-1. Send **HELLO** packet
-2. Wait 2 seconds
-3. Send **REGISTER** with device token `B5 50 A0 69`
-4. Wait 1.5 seconds
-5. Then you can send commands
-
-### 6. The Response Channel Problem
-
-The earbuds send responses on **both** `0000079A` AND `FE2C` services. If you only subscribe to one, you miss the responses.
-
-The fix? Subscribe to notifications on **every** characteristic across **both** services.
+> [!NOTE]
+> Ensure your earbuds are paired and connected to macOS via Bluetooth before launching the app or CLI.
 
 ---
 
 ## Quick Start
 
+### 1. Menu Bar App
+
+#### Build and Install
+Clone the repository and run the install target:
+
+```bash
+make install
+open ~/Applications/Buds.app
+```
+
+This compiles a release binary, packages `Buds.app`, installs it to `~/Applications`, and strips quarantine flags.
+
+#### Development Workflow
+
+```bash
+# Build debug binary
+make build
+
+# Run unit / integration self-tests
+make test
+
+# Build and launch locally
+make run
+```
+
+> [!TIP]
+> To launch Buds automatically at system startup, add `Buds.app` to **System Settings > General > Login Items**.
+
+---
+
+### 2. Command Line Tool (`nordbuds.swift`)
+
+A single-file Swift script is available for fast CLI control:
+
 ```bash
 chmod +x nordbuds.swift
 
-./nordbuds.swift on      # ANC On
-./nordbuds.swift off     # ANC Off  
-./nordbuds.swift trans   # Transparency
-./nordbuds.swift battery # Battery levels
-./nordbuds.swift info    # Device info
-./nordbuds.swift eq      # EQ settings
+./nordbuds.swift on       # Activate Active Noise Cancellation
+./nordbuds.swift off      # Deactivate ANC (Normal mode)
+./nordbuds.swift trans    # Switch to Transparency mode
+./nordbuds.swift battery  # Inspect left, right, and case battery percentages
+./nordbuds.swift info     # Print firmware and hardware info
 ```
 
 ---
 
-## macOS Menu Bar App
+## Protocol Architecture & Reverse Engineering
 
-This repo also includes a native macOS menu bar app.
-
-- App overview: `README_APP.md`
-- Detailed architecture + “no polling” docs: `docs/README.md`
-
----
-
-## Command Flow
+The communication protocol reverse-engineers the vendor handshake extracted from Bluetooth HCI snoop captures and decompiled companion APKs.
 
 ```mermaid
 sequenceDiagram
-    participant Mac
-    participant Buds
+    autonumber
+    participant Mac as macOS (CoreBluetooth)
+    participant Buds as Earbuds (OPOv1 GATT)
 
-    Note over Mac,Buds: Step 1: Open Session
-    Mac->>Buds: HELLO<br/>AA 07 00 00 00 01 23 00 00 12
-    Buds-->>Mac: ACK
+    Note over Mac,Buds: 1. Service Discovery
+    Mac->>Buds: Discover Service 0000079A / 000008A4 & FE2C
+    Buds-->>Mac: Characteristics (Write Without Response + Safe Notify)
+
+    Note over Mac,Buds: 2. Session Handshake
+    Mac->>Buds: HELLO (AA 07 00 00 00 01 23 00 00 12)
+    Buds-->>Mac: Handshake ACK
     
-    Note over Mac,Buds: Wait ~2 seconds
-    
-    Note over Mac,Buds: Step 2: Authenticate
-    Mac->>Buds: REGISTER + token B5 50 A0 69
-    Buds-->>Mac: ACK
-    
-    Note over Mac,Buds: Wait ~1.5 seconds
-    
-    Note over Mac,Buds: Step 3: Query Current Mode
-    Mac->>Buds: QUERY ANC status
-    Buds-->>Mac: RESP (current mode)
-    
-    Note over Mac,Buds: Wait ~1.5 seconds
-    
-    Note over Mac,Buds: Step 4: Set Mode
-    Mac->>Buds: SET ANC (mode: 01/02/04)
-    Buds-->>Mac: ACK
-    Note over Buds: ✓ You hear the click!
+    Note over Mac,Buds: 3. Device Registration
+    Mac->>Buds: REGISTER Token (AA 0C 00 00 00 85 41 05 00 00 B5 50 A0 69)
+    Buds-->>Mac: Registration ACK
+
+    Note over Mac,Buds: 4. Command & Telemetry
+    Mac->>Buds: SET ANC Mode (0x01: ANC, 0x02: Trans, 0x04: Off)
+    Buds-->>Mac: Mode Update Notification
 ```
 
----
+### Packet Format
 
-## Key Packets
-
-| Packet | Hex | Description |
-|--------|-----|-------------|
-| HELLO | `AA 07 00 00 00 01 23 00 00 12` | Open session |
-| REGISTER | `AA 0C 00 00 00 85 41 05 00 00 B5 50 A0 69` | Auth with token |
-| ANC ON | `AA 0A 00 00 04 04 42 03 00 01 01 01` | Mode = 0x01 |
-| ANC OFF | `AA 0A 00 00 04 04 40 03 00 01 01 04` | Mode = 0x04 |
-| TRANSPARENT | `AA 0A 00 00 04 04 42 03 00 01 01 02` | Mode = 0x02 |
-
----
-
-## Packet Structure
+Commands follow a framed structure:
 
 ```
-┌──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬──────┬───────┐
-│ SOF  │ LEN  │ PAD  │ PAD  │ CAT  │ SUB  │ SEQ  │ FLAG │ D0   │ D1   │ MODE  │
-│  AA  │  0A  │  00  │  00  │  04  │  04  │  42  │  03  │  00  │  01  │  01   │
-│ byte0│ byte1│ byte2│ byte3│ byte4│ byte5│ byte6│ byte7│ byte8│ byte9│ byte11│
-└──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┴──────┴───────┘
-
-SOF:  Always 0xAA (start of frame)
-LEN:  Length from CAT to end
-CAT:  0x00=System, 0x04=ANC, 0x05=EQ, 0x06=Battery
-SUB:  0x01=Hello, 0x85=Register, 0x04=Set, 0x82=Query
-MODE: 0x01=ANC On, 0x02=Transparency, 0x04=ANC Off
++------+------+-----------+------+------+------+------+------+------+------+
+| SOF  | LEN  | RESERVED  | CAT  | SUB  | SEQ  | FLAG | D0   | D1   | VAL  |
+| 0xAA | 0x0A | 0x00 0x00 | 0x04 | 0x04 | 0x42 | 0x03 | 0x00 | 0x01 | 0x01 |
++------+------+-----------+------+------+------+------+------+------+------+
 ```
 
----
+- **SOF (`0xAA`)**: Start of Frame delimiter.
+- **LEN**: Packet length payload offset.
+- **CAT**: Category (`0x00` System, `0x04` ANC, `0x05` EQ, `0x06` Battery).
+- **SUB**: Subcommand (`0x01` Hello, `0x85` Register, `0x04` Set, `0x82` Query).
+- **VAL**: Mode selector (`0x01` ANC On, `0x02` Transparency, `0x04` ANC Off).
 
-## GATT Services
-
-| Service | UUID | Purpose |
-|---------|------|---------|
-| **OPO** | `0000079A-D102-11E1-9B23-00025B00A5A5` | Main command channel |
-| Write | `0100079A-...` | Send commands (must use .withoutResponse) |
-| Notify | `0200079A-...` | Receive responses |
-| FE2C | `FE2C...` | Device telemetry (also receives responses!) |
-
----
-
-## OPO Protocol Overview
-
-```mermaid
-graph TB
-    subgraph "Commands"
-        H[HELLO 0x01] --> R[REGISTER 0x85]
-        R --> Q[QUERY 0x82]
-        Q --> S[SET 0x04]
-    end
-    
-    subgraph "Categories"
-        ANC[ANC 0x04] --> EQ[Equalizer 0x05]
-        EQ --> BAT[Battery 0x06]
-    end
-    
-    subgraph "Mode Values"
-        M1[0x01 = ANC On] --> M2[0x02 = Transparency]
-        M2 --> M3[0x04 = ANC Off]
-    end
-    
-    R -.->|token| Device
-    S -.->|mode| Device
-```
-
----
-
-## What We Learned
-
-1. **Big companies don't document protocols on purpose** — it's how they lock you into their ecosystem
-2. **btsnoop captures are the ground truth** — read packets first, guess second
-3. **BLE silently fails** — wrong write type, wrong service, wrong channel. No errors.
-4. **The fix was simple** — subscribe to both services
-
----
-
-## Compatible Devices
-
-This protocol works on all devices using **OPOv1** (Oppo Protocol) — the same protocol across the BBK Electronics audio ecosystem:
-
-### ✅ Confirmed Working
-- **OnePlus Nord Buds 3 Pro**
-
-### 🔄 Likely Compatible (OPOv1 Devices)
-
-**OnePlus:**
-- Nord Buds 3
-- Nord Buds CE 5G
-- Nord Buds 2
-- Buds Pro 2
-- Buds Pro
-- Bullets Wireless Z2
-- Bullets Wireless Z
-
-**Oppo:**
-- Enco X2
-- Enco Free2
-- Enco Free2i
-- Enco Air3
-- Enco Air2 Pro
-- Enco Air2
-
-**Realme:**
-- Buds Air 5 Pro
-- Buds Air 3
-- Buds Air 2 Pro
-- Buds T1
-
-> **Note:** The token `B5 50 A0 69` works for Nord Buds 3 Pro. Other devices may use different tokens. Try the script — it should work!
+> [!IMPORTANT]
+> The earbuds only process writes sent with `.withoutResponse`. Standard `.withResponse` GATT writes fail silently.
 
 ---
 
 ## Troubleshooting
 
-**No response?**
-- Make sure buds are connected to your Mac via Bluetooth
+### App shows "Disconnected" or doesn't connect
+1. Ensure the earbuds are connected to macOS audio in **System Settings > Bluetooth**.
+2. Click the menu bar icon and select **Reconnect**.
+3. If macOS prompts for Bluetooth permissions, grant access under **System Settings > Privacy & Security > Bluetooth**.
 
-**Command ignored?**
-- Using `.withResponse` — must be `.withoutResponse`
-- Missing authentication — you MUST send HELLO + REGISTER first
+### Inspecting Real-Time Logs
+Run the diagnostic stream to monitor packet flow and connection state:
 
-**No ACK?**
-- Subscribe to notifications on BOTH 0000079A AND FE2C characteristics
+```bash
+/usr/bin/log stream --predicate 'subsystem == "local.nordbuds"' --info --debug
+```
+
+Or launch with debug standard output:
+
+```bash
+BUDS_DEBUG=1 ./scripts/run.sh
+```
 
 ---
 
-## Requirements
+## Credits & Attribution
 
-- macOS
-- Xcode Command Line Tools
-- OPO-based earbuds (paired to Mac)
-
----
-
-## License
-
-MIT
+- **Aasheesh**: Initial OPOv1 protocol reverse engineering, HCI packet analysis, and original reference implementation ([Write-up](https://aasheesh.vercel.app/blog/oneplus-buds) | [Repository](https://github.com/AasheeshLikePanner/cracked-oneplus-buds)).
+- **Vedanth**: macOS menu bar application, Swift architecture, CoreBluetooth lifecycle, and multi-model support.

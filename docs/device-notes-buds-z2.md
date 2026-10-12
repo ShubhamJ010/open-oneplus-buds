@@ -71,3 +71,49 @@ The charging case communicates via the earbuds. It does not maintain an independ
 ```text
 AA 0D 00 00 04 02 <seq> 07 00 01 02 01 <casePercent> 02 <budPercent>
 ```
+
+## Case open/close lifecycle and BLE advertisement telemetry
+
+When the case lid opens, the OnePlus Buds Z2 immediately begins dual-stack transmission:
+1. **Classic Bluetooth (A2DP/HFP audio)**: Paging the paired host via an incoming ACL connection.
+2. **BLE manufacturer advertisements**: Emits Company ID `0x072F` (Oplus / Oppo / OnePlus) and Google Fast Pair (`0xFE2C`).
+
+### Advertisement payload structure (Company ID `0x072F`)
+
+Example captured live packet (21 bytes):
+```text
+2F 07 14 10 06 3F 00 01 98 04 ED 6F 4B 2A 0F 84 29 C8 C8 BA 01
+```
+
+- **Byte 0..1**: Company Identifier `[0x2F, 0x07]` (`0x072F` little-endian).
+- **Byte 2..9**: Header and device capability flags.
+- **Byte 10..15**: Earbud Bluetooth MAC address reversed (`ED 6F 4B 2A 0F 84` -> `84:0F:2A:4B:6F:ED`).
+- **Byte 16**: Case state flags (`0x29` = lid open / in case; `0x39` = out of case).
+- **Byte 17**: Left earbud battery (`0xC8` = 200 = 100%).
+- **Byte 18**: Right earbud battery (`0xC8` = 200 = 100%).
+- **Byte 19**: Case battery (`0xBA` = 186 = 93%).
+- **Byte 20**: Charging state / parity indicator.
+
+#### Percentage decoding rule
+Values between `101...200` represent $2 \times \text{percentage}$ (e.g. `0xC8 = 200 -> 100%`). Values `0...100` are raw percentages.
+
+This allows the app to extract and render accurate Left, Right, and Case battery percentages the exact millisecond the lid opens, even before the GATT connection and HELLO handshake complete.
+
+## System audio synchronization & handshake concurrency
+
+### 1. Dual-transport race conditions
+When the case lid opens:
+- macOS native `bluetoothd` accepts the incoming Classic Bluetooth audio link.
+- `CBCentralManager` does not always deliver a new `didDiscoverPeripheral` advertisement if the peripheral is already connected by the system.
+- To detect this instantly without polling, `IOBluetoothDevice.register(forConnectNotifications:selector:)` listens for system-level Classic connection events. Because `IOBluetooth` dispatches on a background queue, the callback must be marked `nonisolated` to avoid tripping Swift concurrency actor assertions.
+
+### 2. Handshake serialization requirement
+`didDiscoverCharacteristicsForService` is called once per service or characteristic batch.
+If `HELLO` (`AA 07 00 ...`) and `REGISTER` (`AA 0C 00 ...`) are triggered asynchronously from each callback, redundant duplicate handshake packets are transmitted across GATT:
+```text
+[TX] HELLO: AA 07 00 00 00 01 23 00 00 12 (duplicated 3x)
+[TX] REGISTER: AA 0C ... (duplicated 3x)
+```
+Buds Z2 firmware will abort the session and cleanly terminate GATT (`reason: 10719`) when receiving overlapping un-serialized handshakes.
+**Solution**: Deduplicate GATT session readiness via `sessionReadyTriggered` and serialize the handshake through the FIFO operation queue (`enqueue(kind: .authenticate, ...)`).
+

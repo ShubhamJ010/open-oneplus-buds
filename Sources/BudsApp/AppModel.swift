@@ -21,6 +21,7 @@ final class AppModel: ObservableObject {
     @Published var lastOperation: OperationEvent?
     @Published var lastError: String?
     @Published var deviceName: String?
+    @Published var logLines: [String] = []
 
     static let lowBatteryThreshold = 20
     private static let deviceNameKey = "buds.lastDeviceName"
@@ -30,7 +31,13 @@ final class AppModel: ObservableObject {
 
     init(client: BudsClient = BudsClientImpl()) {
         self.client = client
-        self.deviceName = UserDefaults.standard.string(forKey: Self.deviceNameKey)
+        let cached = UserDefaults.standard.string(forKey: Self.deviceNameKey)
+        if let cached, BudsDeviceFilter.isAudioDeviceName(cached) {
+            self.deviceName = cached
+        } else {
+            self.deviceName = nil
+            UserDefaults.standard.removeObject(forKey: Self.deviceNameKey)
+        }
         client.start()
 
         eventTask = Task { [weak self] in
@@ -53,7 +60,10 @@ final class AppModel: ObservableObject {
 
         client.setLiveUpdatesEnabled(true)
 
-        guard case .connected = connection else { return }
+        guard case .connected = connection else {
+            client.reconnectNow()
+            return
+        }
 
         let now = Date()
         let batteryFresh = (battery?.lastUpdated).map { now.timeIntervalSince($0) < 5 * 60 } ?? false
@@ -167,24 +177,14 @@ final class AppModel: ObservableObject {
         switch ev {
         case .connection(let s):
             connection = s
-            if case .connected = s {
+            if case .connected(let name) = s {
                 lastError = nil
-            }
-            let detectedName: String? = {
-                switch s {
-                case .connecting(let name),
-                     .discovering(let name),
-                     .authenticating(let name),
-                     .connected(let name),
-                     .reconnecting(let name):
-                    return name
-                default:
-                    return nil
+                if let name, BudsDeviceFilter.isAudioDeviceName(name) {
+                    deviceName = name
+                    UserDefaults.standard.set(name, forKey: Self.deviceNameKey)
                 }
-            }()
-            if let name = detectedName, !name.isEmpty {
+            } else if let name = s.deviceName, deviceName == nil, BudsDeviceFilter.isAudioDeviceName(name) {
                 deviceName = name
-                UserDefaults.standard.set(name, forKey: Self.deviceNameKey)
             }
             // New/transitioning connection state: drop ANC so we don't display stale mode.
             switch s {
@@ -221,6 +221,14 @@ final class AppModel: ObservableObject {
             }
         case .error(let err):
             lastError = err.message
+        case .log(let msg):
+            let formatter = DateFormatter()
+            formatter.dateFormat = "HH:mm:ss"
+            let time = formatter.string(from: Date())
+            logLines.append("[\(time)] \(msg)")
+            if logLines.count > 50 {
+                logLines.removeFirst(logLines.count - 50)
+            }
         }
     }
 }
