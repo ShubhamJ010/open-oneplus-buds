@@ -207,6 +207,13 @@ final class AppModel: ObservableObject {
             default:
                 break
             }
+            if case .scanning = s {
+                lastError = nil
+            } else if case .reconnecting = s {
+                lastError = nil
+            } else if case .connecting = s {
+                lastError = nil
+            }
             switch s {
             case .bluetoothOff:
                 lastError = "Bluetooth is off"

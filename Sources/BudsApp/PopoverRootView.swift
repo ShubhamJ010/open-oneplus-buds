@@ -121,29 +121,22 @@ private struct HeaderCardView: View {
                     Spacer(minLength: 12)
 
                     HStack(spacing: 8) {
-                        Button {
-                            model.reconnect()
-                        } label: {
-                            Image(systemName: "arrow.triangle.2.circlepath")
-                                .font(.system(size: 13, weight: .semibold))
-                                .rotationEffect(.degrees(isReconnecting ? 360 : 0))
-                                .animation(isReconnecting ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: isReconnecting)
-                        }
-                        .buttonStyle(.glass)
-                        .help("Reconnect / Snatch Connection")
-                        .accessibilityLabel("Reconnect")
+                        HeaderGlassIconButton(
+                            systemImage: "arrow.triangle.2.circlepath",
+                            help: "Reconnect / Snatch Connection",
+                            accessibilityLabel: "Reconnect",
+                            rotationDegrees: isReconnecting ? 360 : 0,
+                            isRotating: isReconnecting,
+                            action: { model.reconnect() }
+                        )
 
                         if isConnected {
-                            Button {
-                                showDisconnectConfirm.toggle()
-                            } label: {
-                                Image(systemName: "xmark")
-                                    .font(.system(size: 11, weight: .bold))
-                                    .frame(width: 14, height: 14)
-                            }
-                            .buttonStyle(.glass)
-                            .help("Disconnect")
-                            .accessibilityLabel("Disconnect")
+                            HeaderGlassIconButton(
+                                systemImage: "xmark",
+                                help: "Disconnect",
+                                accessibilityLabel: "Disconnect",
+                                action: { showDisconnectConfirm.toggle() }
+                            )
                             .popover(isPresented: $showDisconnectConfirm, arrowEdge: .top) {
                                 DisconnectConfirmPopoverView(
                                     onCancel: { showDisconnectConfirm = false },
@@ -158,8 +151,13 @@ private struct HeaderCardView: View {
                 }
 
                 if shouldShowNotConnected {
-                    StatusChip(text: notConnectedText, kind: .failure)
-                        .padding(.top, 2)
+                    StatusChip(
+                        text: notConnectedText,
+                        kind: .failure,
+                        action: { model.reconnect() }
+                    )
+                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
+                    .padding(.top, 2)
                 }
 
                 if needsBluetoothHelp {
@@ -199,7 +197,16 @@ private struct HeaderCardView: View {
     }
 
     private var shouldShowNotConnected: Bool {
-        !isConnected && model.lastError != nil
+        // When actively scanning, connecting, discovering, or authenticating, the status subtitle
+        // already clearly explains what's happening (e.g. "Searching…").
+        // Only show error chip when actually in a failed or idle state with an error or explicit disconnect.
+        guard !isConnected else { return false }
+        switch model.connection {
+        case .scanning, .connecting, .discovering, .authenticating, .reconnecting:
+            return false
+        default:
+            return model.lastError != nil
+        }
     }
 
     private var notConnectedText: String {
@@ -222,46 +229,373 @@ private struct HeaderCardView: View {
     }
 }
 
+/// Premium Liquid Glass interactive icon button with continuous hover tracking,
+/// dynamic specular sheen, fluid spring physics, and organic edge glow.
+private struct HeaderGlassIconButton: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let systemImage: String
+    let help: String
+    let accessibilityLabel: String
+    var rotationDegrees: Double = 0
+    var isRotating: Bool = false
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @State private var hoverLocation: CGPoint = .zero
+
+    private let buttonCornerRadius: CGFloat = 11
+    private let buttonWidth: CGFloat = 36
+    private let buttonHeight: CGFloat = 30
+
+    var body: some View {
+        let shape = RoundedRectangle(cornerRadius: buttonCornerRadius, style: .continuous)
+
+        Button(action: action) {
+            GeometryReader { geo in
+                let size = geo.size
+                let center = hoverLocation == .zero
+                    ? CGPoint(x: size.width / 2, y: size.height / 2)
+                    : hoverLocation
+
+                // Responsive tilt / nudge towards pointer
+                let dx = (center.x - size.width / 2) / max(size.width / 2, 1)
+                let dy = (center.y - size.height / 2) / max(size.height / 2, 1)
+                let nudgeX = isHovered ? (dx * 0.8) : 0
+                let nudgeY = isHovered ? (dy * 0.8) : 0
+
+                ZStack {
+                    // Glass backdrop layer
+                    shape
+                        .modifier(GlassSurface(shape: shape))
+                        .overlay {
+                            shape
+                                .fill(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.12))
+                        }
+
+                    // Hover Liquid Sheen / Specular reflection
+                    if isHovered {
+                        RadialGradient(
+                            colors: [
+                                Color.white.opacity(colorScheme == .dark ? 0.38 : 0.45),
+                                Color.white.opacity(colorScheme == .dark ? 0.10 : 0.14),
+                                .clear
+                            ],
+                            center: UnitPoint(
+                                x: max(0, min(1, center.x / max(size.width, 1))),
+                                y: max(0, min(1, center.y / max(size.height, 1)))
+                            ),
+                            startRadius: 0,
+                            endRadius: max(size.width, size.height) * 0.95
+                        )
+                        .clipShape(shape)
+                        .transition(.opacity.animation(.easeInOut(duration: 0.15)))
+                    }
+
+                    // Glass highlight rim stroke
+                    shape
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(isHovered ? 0.40 : (colorScheme == .dark ? 0.18 : 0.22)),
+                                    Color.white.opacity(isHovered ? 0.16 : 0.06)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+
+                    // Foreground Icon
+                    Image(systemName: systemImage)
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(isHovered ? Color.primary : Color.primary.opacity(0.85))
+                        .rotationEffect(.degrees(rotationDegrees))
+                        .animation(
+                            isRotating ? .linear(duration: 1).repeatForever(autoreverses: false) : .default,
+                            value: isRotating
+                        )
+                        .offset(x: nudgeX, y: nudgeY)
+                }
+            }
+            .frame(width: buttonWidth, height: buttonHeight)
+            .scaleEffect(isHovered ? 1.04 : 1.0)
+            .animation(.spring(response: 0.24, dampingFraction: 0.78), value: isHovered)
+            .animation(.spring(response: 0.24, dampingFraction: 0.78), value: hoverLocation)
+            .contentShape(shape)
+        }
+        .buttonStyle(GlassPressFeedbackButtonStyle())
+        .help(help)
+        .accessibilityLabel(accessibilityLabel)
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+                hoverLocation = location
+                if !isHovered {
+                    withAnimation(.spring(response: 0.24, dampingFraction: 0.80)) {
+                        isHovered = true
+                    }
+                }
+            case .ended:
+                withAnimation(.spring(response: 0.20, dampingFraction: 0.82)) {
+                    isHovered = false
+                    hoverLocation = .zero
+                }
+            }
+        }
+    }
+}
+
+/// Refined Disconnect Confirmation Popover with dark liquid glass styling,
+/// mouse-tracking red radial glow, and animated interactive action buttons.
 private struct DisconnectConfirmPopoverView: View {
+    @Environment(\.colorScheme) private var colorScheme
     let onCancel: () -> Void
     let onConfirm: () -> Void
 
+    @State private var isContainerHovered = false
+    @State private var containerHoverLocation: CGPoint = .zero
+
+    @State private var isCancelHovered = false
+    @State private var cancelHoverLocation: CGPoint = .zero
+
+    @State private var isConfirmHovered = false
+    @State private var confirmHoverLocation: CGPoint = .zero
+
+    private let popoverShape = RoundedRectangle(cornerRadius: 18, style: .continuous)
+    private let buttonShape = RoundedRectangle(cornerRadius: 11, style: .continuous)
+
     var body: some View {
-        VStack(spacing: 14) {
-            Text("Disconnect this device?")
-                .font(.system(size: 15, weight: .bold))
-                .foregroundStyle(.primary)
+        ZStack {
+            // Container background glass & mouse-tracking radial red ambient glow
+            GeometryReader { geo in
+                let size = geo.size
+                let center = containerHoverLocation == .zero
+                    ? CGPoint(x: size.width / 2, y: size.height / 2)
+                    : containerHoverLocation
 
-            HStack(spacing: 10) {
-                Button(action: onCancel) {
-                    Text("Cancel")
-                        .font(.system(size: 13, weight: .medium))
-                        .foregroundStyle(.primary)
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.white.opacity(0.12))
+                ZStack {
+                    // Base dark glass fill
+                    popoverShape
+                        .fill(colorScheme == .dark ? Color.black.opacity(0.45) : Color(white: 0.15).opacity(0.35))
+
+                    // Ambient red glow tracking mouse inside the popup
+                    if isContainerHovered {
+                        RadialGradient(
+                            colors: [
+                                Color(red: 1.0, green: 0.26, blue: 0.26).opacity(0.24),
+                                Color(red: 0.95, green: 0.18, blue: 0.18).opacity(0.10),
+                                .clear
+                            ],
+                            center: UnitPoint(
+                                x: max(0, min(1, center.x / max(size.width, 1))),
+                                y: max(0, min(1, center.y / max(size.height, 1)))
+                            ),
+                            startRadius: 0,
+                            endRadius: max(size.width, size.height) * 0.70
+                        )
+                        .clipShape(popoverShape)
+                        .transition(.opacity.animation(.easeInOut(duration: 0.20)))
+                    }
+
+                    // Subtle perimeter glass stroke
+                    popoverShape
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(isContainerHovered ? 0.22 : 0.12),
+                                    Color.white.opacity(0.05)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
                         )
                 }
-                .buttonStyle(.plain)
+            }
 
-                Button(action: onConfirm) {
-                    Text("Confirm")
-                        .font(.system(size: 13, weight: .semibold))
-                        .foregroundStyle(Color(red: 1.0, green: 0.35, blue: 0.35))
-                        .frame(maxWidth: .infinity)
-                        .padding(.vertical, 8)
-                        .background(
-                            RoundedRectangle(cornerRadius: 10, style: .continuous)
-                                .fill(Color.red.opacity(0.2))
-                        )
+            // Foreground content
+            VStack(spacing: 16) {
+                VStack(spacing: 4) {
+                    HStack(spacing: 7) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 13, weight: .bold))
+                            .foregroundStyle(Color(red: 1.0, green: 0.38, blue: 0.38))
+
+                        Text("Disconnect Buds?")
+                            .font(.system(size: 14, weight: .bold))
+                            .foregroundStyle(.primary)
+                    }
+
+                    Text("Active audio stream and controls will disconnect.")
+                        .font(.system(size: 11, weight: .regular))
+                        .foregroundStyle(.secondary)
+                        .multilineTextAlignment(.center)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
-                .buttonStyle(.plain)
+                .padding(.horizontal, 4)
+
+                HStack(spacing: 10) {
+                    // Cancel Liquid Glass Button
+                    Button(action: onCancel) {
+                        GeometryReader { geo in
+                            let size = geo.size
+                            let center = cancelHoverLocation == .zero
+                                ? CGPoint(x: size.width / 2, y: size.height / 2)
+                                : cancelHoverLocation
+
+                            ZStack {
+                                buttonShape
+                                    .fill(Color.white.opacity(isCancelHovered ? 0.16 : 0.08))
+
+                                if isCancelHovered {
+                                    RadialGradient(
+                                        colors: [
+                                            Color.white.opacity(0.25),
+                                            Color.white.opacity(0.06),
+                                            .clear
+                                        ],
+                                        center: UnitPoint(
+                                            x: max(0, min(1, center.x / max(size.width, 1))),
+                                            y: max(0, min(1, center.y / max(size.height, 1)))
+                                        ),
+                                        startRadius: 0,
+                                        endRadius: max(size.width, size.height) * 0.8
+                                    )
+                                    .clipShape(buttonShape)
+                                }
+
+                                buttonShape
+                                    .strokeBorder(
+                                        Color.white.opacity(isCancelHovered ? 0.28 : 0.12),
+                                        lineWidth: 1
+                                    )
+
+                                Text("Cancel")
+                                    .font(.system(size: 12, weight: .medium))
+                                    .foregroundStyle(isCancelHovered ? Color.primary : Color.primary.opacity(0.85))
+                            }
+                        }
+                        .frame(height: 32)
+                        .scaleEffect(isCancelHovered ? 1.03 : 1.0)
+                        .animation(.spring(response: 0.22, dampingFraction: 0.78), value: isCancelHovered)
+                        .contentShape(buttonShape)
+                    }
+                    .buttonStyle(GlassPressFeedbackButtonStyle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let loc):
+                            cancelHoverLocation = loc
+                            if !isCancelHovered {
+                                withAnimation(.easeOut(duration: 0.12)) { isCancelHovered = true }
+                            }
+                        case .ended:
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                isCancelHovered = false
+                                cancelHoverLocation = .zero
+                            }
+                        }
+                    }
+
+                    // Confirm Disconnect Button with Vibrant Crimson Glow
+                    Button(action: onConfirm) {
+                        GeometryReader { geo in
+                            let size = geo.size
+                            let center = confirmHoverLocation == .zero
+                                ? CGPoint(x: size.width / 2, y: size.height / 2)
+                                : confirmHoverLocation
+
+                            ZStack {
+                                // Background coral/red gradient
+                                buttonShape
+                                    .fill(
+                                        LinearGradient(
+                                            colors: isConfirmHovered
+                                                ? [
+                                                    Color(red: 0.98, green: 0.30, blue: 0.30),
+                                                    Color(red: 0.86, green: 0.18, blue: 0.18)
+                                                  ]
+                                                : [
+                                                    Color(red: 0.88, green: 0.24, blue: 0.24).opacity(0.35),
+                                                    Color(red: 0.75, green: 0.18, blue: 0.18).opacity(0.25)
+                                                  ],
+                                            startPoint: .topLeading,
+                                            endPoint: .bottomTrailing
+                                        )
+                                    )
+
+                                // Specular highlight following cursor
+                                if isConfirmHovered {
+                                    RadialGradient(
+                                        colors: [
+                                            Color.white.opacity(0.42),
+                                            Color.white.opacity(0.12),
+                                            .clear
+                                        ],
+                                        center: UnitPoint(
+                                            x: max(0, min(1, center.x / max(size.width, 1))),
+                                            y: max(0, min(1, center.y / max(size.height, 1)))
+                                        ),
+                                        startRadius: 0,
+                                        endRadius: max(size.width, size.height) * 0.75
+                                    )
+                                    .clipShape(buttonShape)
+                                }
+
+                                buttonShape
+                                    .strokeBorder(
+                                        isConfirmHovered
+                                            ? Color.white.opacity(0.35)
+                                            : Color(red: 1.0, green: 0.40, blue: 0.40).opacity(0.40),
+                                        lineWidth: 1
+                                    )
+
+                                Text("Disconnect")
+                                    .font(.system(size: 12, weight: .semibold))
+                                    .foregroundStyle(
+                                        isConfirmHovered ? Color.white : Color(red: 1.0, green: 0.40, blue: 0.40)
+                                    )
+                            }
+                        }
+                        .frame(height: 32)
+                        .scaleEffect(isConfirmHovered ? 1.03 : 1.0)
+                        .animation(.spring(response: 0.22, dampingFraction: 0.78), value: isConfirmHovered)
+                        .contentShape(buttonShape)
+                    }
+                    .buttonStyle(GlassPressFeedbackButtonStyle())
+                    .onContinuousHover { phase in
+                        switch phase {
+                        case .active(let loc):
+                            confirmHoverLocation = loc
+                            if !isConfirmHovered {
+                                withAnimation(.easeOut(duration: 0.12)) { isConfirmHovered = true }
+                            }
+                        case .ended:
+                            withAnimation(.easeOut(duration: 0.18)) {
+                                isConfirmHovered = false
+                                confirmHoverLocation = .zero
+                            }
+                        }
+                    }
+                }
+            }
+            .padding(14)
+        }
+        .frame(width: 250)
+        .clipShape(popoverShape)
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let loc):
+                containerHoverLocation = loc
+                if !isContainerHovered {
+                    withAnimation(.easeOut(duration: 0.15)) { isContainerHovered = true }
+                }
+            case .ended:
+                withAnimation(.easeOut(duration: 0.22)) {
+                    isContainerHovered = false
+                    containerHoverLocation = .zero
+                }
             }
         }
-        .padding(16)
-        .frame(width: 240)
     }
 }
 
@@ -306,6 +640,133 @@ private struct ANCCardView: View {
     }
 }
 
+/// Innovative Liquid Glass Battery Refresh Button featuring:
+/// - Smooth interactive cursor-following specular sheen
+/// - Dynamic 360 spin animation on click with spring recoil
+/// - Springy scale & pointer-following gentle nudge
+/// - Gradient glass border with subtle ambient glow on hover
+private struct BatteryRefreshGlassButton: View {
+    @Environment(\.colorScheme) private var colorScheme
+    let action: () -> Void
+
+    @State private var isHovered = false
+    @State private var hoverLocation: CGPoint = .zero
+    @State private var spinAngle: Double = 0
+    @State private var isRefreshing = false
+
+    private let buttonCornerRadius: CGFloat = 9
+    private let shape = RoundedRectangle(cornerRadius: 9, style: .continuous)
+
+    var body: some View {
+        Button {
+            // Trigger 360 spin with energetic spring physics
+            withAnimation(.spring(response: 0.55, dampingFraction: 0.62)) {
+                spinAngle += 360
+                isRefreshing = true
+            }
+            action()
+            // Reset state subtly after animation
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.6) {
+                isRefreshing = false
+            }
+        } label: {
+            GeometryReader { geo in
+                let size = geo.size
+                let center = hoverLocation == .zero
+                    ? CGPoint(x: size.width / 2, y: size.height / 2)
+                    : hoverLocation
+
+                // Pointer parallax nudge
+                let dx = (center.x - size.width / 2) / max(size.width / 2, 1)
+                let dy = (center.y - size.height / 2) / max(size.height / 2, 1)
+                let nudgeX = isHovered ? (dx * 0.7) : 0
+                let nudgeY = isHovered ? (dy * 0.7) : 0
+
+                ZStack {
+                    // Glass backing
+                    shape
+                        .modifier(GlassSurface(shape: shape))
+                        .overlay {
+                            shape
+                                .fill(Color.white.opacity(colorScheme == .dark ? 0.08 : 0.12))
+                        }
+
+                    // Liquid specular shine tracking cursor
+                    if isHovered {
+                        RadialGradient(
+                            colors: [
+                                Color.white.opacity(colorScheme == .dark ? 0.35 : 0.42),
+                                Color.white.opacity(colorScheme == .dark ? 0.08 : 0.12),
+                                .clear
+                            ],
+                            center: UnitPoint(
+                                x: max(0, min(1, center.x / max(size.width, 1))),
+                                y: max(0, min(1, center.y / max(size.height, 1)))
+                            ),
+                            startRadius: 0,
+                            endRadius: max(size.width, size.height) * 0.9
+                        )
+                        .clipShape(shape)
+                        .transition(.opacity.animation(.easeInOut(duration: 0.14)))
+                    }
+
+                    // Frosted edge highlight stroke
+                    shape
+                        .strokeBorder(
+                            LinearGradient(
+                                colors: [
+                                    Color.white.opacity(isHovered ? 0.38 : (colorScheme == .dark ? 0.16 : 0.20)),
+                                    Color.white.opacity(isHovered ? 0.14 : 0.06)
+                                ],
+                                startPoint: .topLeading,
+                                endPoint: .bottomTrailing
+                            ),
+                            lineWidth: 1
+                        )
+
+                    // Button content
+                    HStack(spacing: 5) {
+                        Image(systemName: "arrow.clockwise")
+                            .font(.system(size: 11, weight: .semibold))
+                            .rotationEffect(.degrees(spinAngle))
+                            .foregroundStyle(isRefreshing ? Color.accentColor : (isHovered ? Color.primary : Color.secondary))
+
+                        Text("Refresh")
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(isHovered ? Color.primary : Color.secondary)
+                    }
+                    .offset(x: nudgeX, y: nudgeY)
+                }
+            }
+            .frame(width: 78, height: 26)
+            .scaleEffect(isHovered ? 1.04 : 1.0)
+            .animation(.spring(response: 0.24, dampingFraction: 0.78), value: isHovered)
+            .animation(.spring(response: 0.24, dampingFraction: 0.78), value: hoverLocation)
+            .contentShape(shape)
+        }
+        .buttonStyle(GlassPressFeedbackButtonStyle())
+        .help("Refresh battery status")
+        .accessibilityLabel("Refresh battery")
+        .onContinuousHover { phase in
+            switch phase {
+            case .active(let location):
+                hoverLocation = location
+                if !isHovered {
+                    withAnimation(.spring(response: 0.22, dampingFraction: 0.80)) {
+                        isHovered = true
+                    }
+                }
+            case .ended:
+                withAnimation(.spring(response: 0.20, dampingFraction: 0.82)) {
+                    isHovered = false
+                    hoverLocation = .zero
+                }
+            }
+        }
+    }
+}
+
+
 private struct BatteryCardView: View {
     @EnvironmentObject var model: AppModel
     @Environment(\.colorScheme) private var colorScheme
@@ -339,14 +800,9 @@ private struct BatteryCardView: View {
                     Text("Battery")
                         .font(Typography.sectionHeader)
                     Spacer()
-                    Button {
-                        model.refreshBattery()
-                    } label: {
-                        Label("Refresh", systemImage: "arrow.clockwise")
-                    }
-                    .labelStyle(.titleAndIcon)
-                    .buttonStyle(.glass)
-                    .controlSize(.small)
+                    BatteryRefreshGlassButton(
+                        action: { model.refreshBattery() }
+                    )
                 }
 
                 HStack(spacing: 10) {
@@ -470,7 +926,9 @@ private struct QuitSectionCard: View {
                             .foregroundStyle(Color.white.opacity(0.92))
                             .multilineTextAlignment(.center)
                             .lineLimit(2)
-                            .padding(.horizontal, 16)
+                            .minimumScaleFactor(0.85)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .padding(.horizontal, 14)
                             .transition(.opacity.combined(with: .scale(scale: 0.95, anchor: .bottom)))
                     }
                 }
