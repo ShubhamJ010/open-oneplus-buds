@@ -208,8 +208,30 @@ public final class BudsClientImpl: NSObject, BudsClient {
     }
 
     public func reconnectNow() {
+        if let central, central.state != .poweredOn {
+            switch central.state {
+            case .poweredOff:
+                connectionState = .bluetoothOff
+            case .unauthorized:
+                connectionState = .bluetoothUnauthorized
+            case .unsupported:
+                connectionState = .bluetoothUnsupported
+            case .resetting:
+                connectionState = .bluetoothResetting
+            default:
+                break
+            }
+            return
+        }
+
         enqueue(kind: .reconnect, timeout: .seconds(15), maxRetries: 1) { [weak self] in
             guard let self else { return }
+            guard let c = self.central, c.state == .poweredOn else {
+                if let c = self.central {
+                    self.centralManagerDidUpdateState(c)
+                }
+                return
+            }
             self.serviceDiscoveryTimeoutTask?.cancel()
             self.serviceDiscoveryTimeoutTask = nil
             self.scanWatchdogTask?.cancel()
@@ -484,6 +506,10 @@ public final class BudsClientImpl: NSObject, BudsClient {
 
     private func startScanOrRetrieve() {
         guard let central else { return }
+        guard central.state == .poweredOn else {
+            centralManagerDidUpdateState(central)
+            return
+        }
         log("Checking Bluetooth (state=\(central.state.rawValue))...")
         scanWatchdogTask?.cancel()
         scanWatchdogTask = nil

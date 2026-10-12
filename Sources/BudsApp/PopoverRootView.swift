@@ -96,10 +96,13 @@ private struct HeaderCardView: View {
                 HStack(alignment: .center, spacing: 14) {
                     Image(systemName: iconName)
                         .renderingMode(.template)
-                        .symbolRenderingMode(.hierarchical)
+                        .symbolRenderingMode(isConnected ? .monochrome : .hierarchical)
                         .font(.system(size: 24, weight: .medium))
                         .frame(width: 32, height: 32)
-                        .foregroundStyle(isConnected ? Color.primary : Color.secondary)
+                        .foregroundStyle(isConnected ? Color.primary : (isReconnecting ? Color.accentColor : Color.secondary))
+                        .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp.byLayer), options: .nonRepeating))
+                        .symbolEffect(.pulse.byLayer, options: .repeating, isActive: isReconnecting)
+                        .symbolEffect(.bounce.byLayer, value: isConnected)
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(deviceTitle)
@@ -121,6 +124,15 @@ private struct HeaderCardView: View {
                     Spacer(minLength: 12)
 
                     HStack(spacing: 8) {
+                        if needsBluetoothHelp {
+                            HeaderGlassIconButton(
+                                systemImage: "gearshape",
+                                help: bluetoothHelpButtonTitle,
+                                accessibilityLabel: bluetoothHelpButtonTitle,
+                                action: { openBluetoothSettings() }
+                            )
+                        }
+
                         HeaderGlassIconButton(
                             systemImage: "arrow.triangle.2.circlepath",
                             help: "Reconnect / Snatch Connection",
@@ -150,23 +162,21 @@ private struct HeaderCardView: View {
                     }
                 }
 
-                if shouldShowNotConnected {
-                    StatusChip(
-                        text: notConnectedText,
-                        kind: .failure,
-                        action: { model.reconnect() }
-                    )
-                    .transition(.opacity.combined(with: .scale(scale: 0.95)))
-                    .padding(.top, 2)
-                }
+                if shouldShowErrorBanner {
+                    HStack(spacing: 6) {
+                        Image(systemName: "exclamationmark.triangle.fill")
+                            .font(.system(size: 11, weight: .semibold))
+                            .foregroundStyle(Color(red: 1.0, green: 0.38, blue: 0.38))
 
-                if needsBluetoothHelp {
-                    HStack {
+                        Text(errorBannerText)
+                            .font(.system(size: 11, weight: .medium))
+                            .foregroundStyle(.secondary)
+                            .lineLimit(1)
+
                         Spacer()
-                        Button("Open Bluetooth Privacy") { openBluetoothPrivacy() }
-                            .buttonStyle(.glass)
                     }
                     .padding(.top, 2)
+                    .transition(.opacity)
                 }
             }
             .padding(.vertical, 4)
@@ -193,25 +203,34 @@ private struct HeaderCardView: View {
     }
 
     private var iconName: String {
-        isConnected ? "earbuds" : "ear.trianglebadge.exclamationmark"
+        switch model.connection {
+        case .connected:
+            return "earbuds"
+        case .bluetoothOff:
+            return "bluetooth.slash"
+        case .bluetoothUnauthorized:
+            return "hand.raised.slash.fill"
+        case .bluetoothUnsupported:
+            return "slash.circle"
+        default:
+            return "ear.trianglebadge.exclamationmark"
+        }
     }
 
-    private var shouldShowNotConnected: Bool {
-        // When actively scanning, connecting, discovering, or authenticating, the status subtitle
-        // already clearly explains what's happening (e.g. "Searching…").
-        // Only show error chip when actually in a failed or idle state with an error or explicit disconnect.
+    private var shouldShowErrorBanner: Bool {
+        // If Bluetooth is explicitly off, the status subtitle and gear button already make it obvious; don't clutter with duplicate banners.
         guard !isConnected else { return false }
         switch model.connection {
-        case .scanning, .connecting, .discovering, .authenticating, .reconnecting:
+        case .scanning, .connecting, .discovering, .authenticating, .reconnecting, .bluetoothOff:
             return false
         default:
             return model.lastError != nil
         }
     }
 
-    private var notConnectedText: String {
+    private var errorBannerText: String {
         if let err = model.lastError, !err.isEmpty { return err }
-        return "Not connected"
+        return "Connection failed"
     }
 
     private var needsBluetoothHelp: Bool {
@@ -223,7 +242,22 @@ private struct HeaderCardView: View {
         }
     }
 
-    private func openBluetoothPrivacy() {
+    private var bluetoothHelpButtonTitle: String {
+        switch model.connection {
+        case .bluetoothOff:
+            return "Open Bluetooth Settings"
+        default:
+            return "Open Bluetooth Privacy"
+        }
+    }
+
+    private func openBluetoothSettings() {
+        if case .bluetoothOff = model.connection {
+            if let url = URL(string: "x-apple.systempreferences:com.apple.BluetoothSettings") {
+                NSWorkspace.shared.open(url)
+                return
+            }
+        }
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth") else { return }
         NSWorkspace.shared.open(url)
     }

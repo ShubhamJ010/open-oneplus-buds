@@ -1,5 +1,6 @@
 import Foundation
 import SwiftUI
+import Combine
 import BudsCore
 import AppKit
 
@@ -22,6 +23,10 @@ final class AppModel: ObservableObject {
     @Published var lastError: String?
     @Published var deviceName: String?
     @Published var logLines: [String] = []
+    @Published var isMediaPlaying: Bool = false
+
+    private let playbackMonitor = MediaPlaybackMonitor()
+    private var playbackCancellable: AnyCancellable?
 
     static let lowBatteryThreshold = 20
     private static let deviceNameKey = "buds.lastDeviceName"
@@ -40,6 +45,12 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.removeObject(forKey: Self.deviceNameKey)
         }
         client.start()
+
+        playbackCancellable = playbackMonitor.$isPlaying
+            .receive(on: DispatchQueue.main)
+            .sink { [weak self] playing in
+                self?.isMediaPlaying = playing
+            }
 
         rightClickMonitor = MenuBarRightClickMonitor { [weak self] in
             Task { @MainActor [weak self] in
@@ -161,6 +172,11 @@ final class AppModel: ObservableObject {
     }
 
     var ancKnown: Bool { anc != nil }
+
+    var isConnected: Bool {
+        if case .connected = connection { return true }
+        return false
+    }
 
     // Battery as shown in UI: if case % is unavailable, optionally fall back to last known
     // value so the user still sees a reasonable case % (marked as stale).

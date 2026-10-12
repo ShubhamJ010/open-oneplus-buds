@@ -6,10 +6,14 @@ struct MenuBarLabelView: View {
     var body: some View {
         HStack(spacing: 6) {
             IconKit.menuBarMark()
-                .symbolRenderingMode(.monochrome)
                 .renderingMode(.template)
                 .font(.system(size: 13, weight: .semibold))
                 .foregroundStyle(.primary)
+                .symbolEffect(
+                    .pulse.byLayer,
+                    options: .repeating,
+                    isActive: model.isMediaPlaying
+                )
 
             if let text = model.menuBatteryText {
                 Text(text)

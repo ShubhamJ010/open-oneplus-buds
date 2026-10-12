@@ -4,11 +4,7 @@ import BudsCore
 
 enum IconKit {
     static func menuBarMark() -> Image {
-        if let img = NSImage(systemSymbolName: "airpods", accessibilityDescription: nil) {
-            img.isTemplate = true
-            return Image(nsImage: img)
-        }
-        return Image(systemName: "earbuds")
+        Image(systemName: "airpods")
     }
 
     static func ancIcon(for mode: ANCMode?, connected: Bool) -> Image {
