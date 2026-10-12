@@ -117,3 +117,20 @@ If `HELLO` (`AA 07 00 ...`) and `REGISTER` (`AA 0C 00 ...`) are triggered asynch
 Buds Z2 firmware will abort the session and cleanly terminate GATT (`reason: 10719`) when receiving overlapping un-serialized handshakes.
 **Solution**: Deduplicate GATT session readiness via `sessionReadyTriggered` and serialize the handshake through the FIFO operation queue (`enqueue(kind: .authenticate, ...)`).
 
+---
+
+### 3. Connection Handoff: Snatching & Releasing (Phone <-> Mac)
+
+OnePlus Buds Z2 maintain a single active Bluetooth Classic ACL link at a time:
+- **Phone to Mac ("Snatch")**:
+  - When the buds are active on the phone, BLE GATT alone cannot establish the audio session on macOS.
+  - `BudsClient.reconnectNow()` triggers `IOBluetoothDevice.openConnection()` on a background queue.
+  - macOS sends an `HCI Create Connection` paging packet on Bluetooth Classic BR/EDR.
+  - The Buds Z2 firmware prioritizes incoming baseband paging from a paired host, dropping the phone ACL link and connecting to Mac.
+  - macOS system audio registers the connect event via `IOBluetoothDevice.register(forConnectNotifications:)`, which immediately establishes the CoreBluetooth GATT session.
+- **Mac to Phone ("Give back / Disconnect")**:
+  - The app terminates GATT and calls `IOBluetoothDevice.closeConnection()`.
+  - Dropping the Mac ACL link triggers the Buds Z2 internal fallback logic: the earbuds automatically reconnect to the previously connected paired phone.
+  - Exposed in the UI via the Header Card close button (`x`) with a confirmation popover, and via two-finger / secondary-click on the macOS menu bar icon.
+
+

@@ -28,6 +28,7 @@ final class AppModel: ObservableObject {
     private static let caseCachePercentKey = "buds.caseBatteryPercent"
     private static let caseCacheTimestampKey = "buds.caseBatteryTimestamp"
     private static let caseCacheMaxAge: TimeInterval = 12 * 60 * 60 // 12h
+    private var rightClickMonitor: MenuBarRightClickMonitor?
 
     init(client: BudsClient = BudsClientImpl()) {
         self.client = client
@@ -39,6 +40,12 @@ final class AppModel: ObservableObject {
             UserDefaults.standard.removeObject(forKey: Self.deviceNameKey)
         }
         client.start()
+
+        rightClickMonitor = MenuBarRightClickMonitor { [weak self] in
+            Task { @MainActor [weak self] in
+                self?.disconnect()
+            }
+        }
 
         eventTask = Task { [weak self] in
             guard let self else { return }
@@ -115,6 +122,13 @@ final class AppModel: ObservableObject {
     func reconnect() {
         lastError = nil
         client.reconnectNow()
+    }
+
+    /// Disconnect from the earbuds over Bluetooth Classic and BLE GATT, releasing
+    /// the ACL link so the earbuds automatically fall back to the user's paired phone.
+    func disconnect() {
+        lastError = nil
+        client.disconnectNow()
     }
 
     func quit() {

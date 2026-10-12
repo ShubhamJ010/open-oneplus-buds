@@ -43,6 +43,7 @@ struct PopoverRootView: View {
 
 private struct HeaderCardView: View {
     @EnvironmentObject var model: AppModel
+    @State private var showDisconnectConfirm = false
 
     var deviceTitle: String {
         if let name = model.deviceName, !name.isEmpty {
@@ -119,17 +120,41 @@ private struct HeaderCardView: View {
 
                     Spacer(minLength: 12)
 
-                    Button {
-                        model.reconnect()
-                    } label: {
-                        Image(systemName: "arrow.triangle.2.circlepath")
-                            .font(.system(size: 13, weight: .semibold))
-                            .rotationEffect(.degrees(isReconnecting ? 360 : 0))
-                            .animation(isReconnecting ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: isReconnecting)
+                    HStack(spacing: 8) {
+                        Button {
+                            model.reconnect()
+                        } label: {
+                            Image(systemName: "arrow.triangle.2.circlepath")
+                                .font(.system(size: 13, weight: .semibold))
+                                .rotationEffect(.degrees(isReconnecting ? 360 : 0))
+                                .animation(isReconnecting ? .linear(duration: 1).repeatForever(autoreverses: false) : .default, value: isReconnecting)
+                        }
+                        .buttonStyle(.glass)
+                        .help("Reconnect / Snatch Connection")
+                        .accessibilityLabel("Reconnect")
+
+                        if isConnected {
+                            Button {
+                                showDisconnectConfirm.toggle()
+                            } label: {
+                                Image(systemName: "xmark")
+                                    .font(.system(size: 11, weight: .bold))
+                                    .frame(width: 14, height: 14)
+                            }
+                            .buttonStyle(.glass)
+                            .help("Disconnect")
+                            .accessibilityLabel("Disconnect")
+                            .popover(isPresented: $showDisconnectConfirm, arrowEdge: .top) {
+                                DisconnectConfirmPopoverView(
+                                    onCancel: { showDisconnectConfirm = false },
+                                    onConfirm: {
+                                        showDisconnectConfirm = false
+                                        model.disconnect()
+                                    }
+                                )
+                            }
+                        }
                     }
-                    .buttonStyle(.glass)
-                    .help("Reconnect")
-                    .accessibilityLabel("Reconnect")
                 }
 
                 if shouldShowNotConnected {
@@ -194,6 +219,49 @@ private struct HeaderCardView: View {
     private func openBluetoothPrivacy() {
         guard let url = URL(string: "x-apple.systempreferences:com.apple.preference.security?Privacy_Bluetooth") else { return }
         NSWorkspace.shared.open(url)
+    }
+}
+
+private struct DisconnectConfirmPopoverView: View {
+    let onCancel: () -> Void
+    let onConfirm: () -> Void
+
+    var body: some View {
+        VStack(spacing: 14) {
+            Text("Disconnect this device?")
+                .font(.system(size: 15, weight: .bold))
+                .foregroundStyle(.primary)
+
+            HStack(spacing: 10) {
+                Button(action: onCancel) {
+                    Text("Cancel")
+                        .font(.system(size: 13, weight: .medium))
+                        .foregroundStyle(.primary)
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.white.opacity(0.12))
+                        )
+                }
+                .buttonStyle(.plain)
+
+                Button(action: onConfirm) {
+                    Text("Confirm")
+                        .font(.system(size: 13, weight: .semibold))
+                        .foregroundStyle(Color(red: 1.0, green: 0.35, blue: 0.35))
+                        .frame(maxWidth: .infinity)
+                        .padding(.vertical, 8)
+                        .background(
+                            RoundedRectangle(cornerRadius: 10, style: .continuous)
+                                .fill(Color.red.opacity(0.2))
+                        )
+                }
+                .buttonStyle(.plain)
+            }
+        }
+        .padding(16)
+        .frame(width: 240)
     }
 }
 

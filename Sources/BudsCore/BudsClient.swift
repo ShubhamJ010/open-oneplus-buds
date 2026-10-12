@@ -14,7 +14,14 @@ public protocol BudsClient: AnyObject {
     /// Disabling reduces earbud BLE traffic and battery impact.
     func setLiveUpdatesEnabled(_ enabled: Bool)
 
+    /// Reconnect to the earbuds. If disconnected or paired to another device (e.g. phone),
+    /// initiates Bluetooth Classic baseband paging to snatch the connection to Mac, followed
+    /// by BLE GATT service discovery and authentication handshake.
     func reconnectNow()
+
+    /// Disconnect from the earbuds. Terminates BLE GATT and closes the Bluetooth Classic ACL
+    /// link, allowing the earbuds to fall back and automatically reconnect to the user's phone.
+    func disconnectNow()
     func refreshAllNow(source: UpdateSource)
 
     func setANC(_ mode: ANCMode)
@@ -218,8 +225,37 @@ public final class BudsClientImpl: NSObject, BudsClient {
             self.notify079A = nil
             self.notifyChars = []
             self.ancMode = nil
+
+            // Attempt Classic takeover (snatch from phone to Mac if not connected)
+            self.snatchClassicConnection()
+
             self.startScanOrRetrieve()
         }
+    }
+
+    public func disconnectNow() {
+        log("Disconnect requested: releasing connection back to paired device")
+        reconnectTask?.cancel(); reconnectTask = nil
+        serviceDiscoveryTimeoutTask?.cancel(); serviceDiscoveryTimeoutTask = nil
+        scanWatchdogTask?.cancel(); scanWatchdogTask = nil
+        central?.stopScan()
+
+        if let p = peripheral {
+            for ch in notifyChars { p.setNotifyValue(false, for: ch) }
+            central?.cancelPeripheralConnection(p)
+        }
+        peripheral = nil
+        write079A = nil
+        notify079A = nil
+        notifyChars = []
+        authState = .notAuthenticated
+        sessionReadyTriggered = false
+        ancMode = nil
+
+        // Drop Classic Bluetooth ACL connection so the buds release back to phone
+        releaseClassicConnection()
+
+        connectionState = .idle
     }
 
     public func refreshAllNow(source: UpdateSource) {
@@ -769,6 +805,45 @@ public final class BudsClientImpl: NSObject, BudsClient {
                 return
             }
             self.reconnectNow()
+        }
+    }
+
+    /// Asynchronously initiate Bluetooth Classic baseband paging (HCI Create Connection)
+    /// to take over (snatch) the connection from a previously paired phone to this Mac.
+    nonisolated private func snatchClassicConnection() {
+        DispatchQueue.global(qos: .userInitiated).async { [logger] in
+            let paired = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice]) ?? []
+            guard let dev = paired.first(where: { d in
+                guard let name = d.nameOrAddress else { return false }
+                return BudsDeviceFilter.isAudioDeviceName(name)
+            }) else {
+                logger.info("Snatch: No paired buds found to connect")
+                return
+            }
+
+            if dev.isConnected() {
+                logger.info("Snatch: Already connected to \(dev.nameOrAddress ?? "device", privacy: .public)")
+                return
+            }
+
+            logger.info("Snatch: Opening Classic ACL connection to \(dev.nameOrAddress ?? "device", privacy: .public)...")
+            let res = dev.openConnection()
+            logger.info("Snatch: openConnection result: \(res)")
+        }
+    }
+
+    /// Asynchronously terminate the Bluetooth Classic ACL connection, allowing the earbuds
+    /// to fall back and automatically reconnect to the user's phone.
+    nonisolated private func releaseClassicConnection() {
+        DispatchQueue.global(qos: .userInitiated).async { [logger] in
+            let paired = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice]) ?? []
+            for dev in paired {
+                guard let name = dev.nameOrAddress, BudsDeviceFilter.isAudioDeviceName(name) else { continue }
+                if dev.isConnected() {
+                    logger.info("Releasing Classic Bluetooth connection for \(name, privacy: .public)")
+                    dev.closeConnection()
+                }
+            }
         }
     }
 }
