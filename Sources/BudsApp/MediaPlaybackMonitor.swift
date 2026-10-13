@@ -70,8 +70,8 @@ final class MediaPlaybackMonitor: ObservableObject {
     }
 
     private func startPeriodicCheck() {
-        // Lightweight 1.5s heartbeat to catch direct CoreAudio audio (e.g. browser video/games)
-        pollTimer = Timer.scheduledTimer(withTimeInterval: 1.5, repeats: true) { [weak self] _ in
+        // Lightweight 0.8s heartbeat for immediate feedback on play/pause
+        pollTimer = Timer.scheduledTimer(withTimeInterval: 0.8, repeats: true) { [weak self] _ in
             Task { @MainActor [weak self] in
                 self?.checkPlayback()
             }
@@ -79,19 +79,14 @@ final class MediaPlaybackMonitor: ObservableObject {
     }
 
     func checkPlayback() {
-        // 1. Check MediaRemote first if available
         if let mrIsPlayingFn {
             mrIsPlayingFn(DispatchQueue.main) { [weak self] mrPlaying in
                 Task { @MainActor [weak self] in
                     guard let self else { return }
-                    if mrPlaying {
-                        if !self.isPlaying { self.isPlaying = true }
-                        return
-                    }
-                    // 2. Fall back to active CoreAudio hardware output status
                     let audioRunning = self.checkCoreAudioIsRunning()
-                    if self.isPlaying != audioRunning {
-                        self.isPlaying = audioRunning
+                    let active = mrPlaying || audioRunning
+                    if self.isPlaying != active {
+                        self.isPlaying = active
                     }
                 }
             }
