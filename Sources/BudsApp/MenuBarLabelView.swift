@@ -5,8 +5,11 @@ struct MenuBarLabelView: View {
 
     var body: some View {
         HStack(spacing: 6) {
-            Image(nsImage: model.menuBarImage)
+            IconKit.menuBarMark()
+                .symbolRenderingMode(.monochrome)
                 .renderingMode(.template)
+                .font(.system(size: 13, weight: .semibold))
+                .foregroundStyle(.primary)
 
             if let text = model.menuBatteryText {
                 Text(text)

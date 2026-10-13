@@ -24,12 +24,9 @@ final class AppModel: ObservableObject {
     @Published var deviceName: String?
     @Published var logLines: [String] = []
     @Published var isMediaPlaying: Bool = false
-    @Published var menuBarImage: NSImage = IconKit.staticMenuBarNSImage
 
     private let playbackMonitor = MediaPlaybackMonitor()
     private var playbackCancellable: AnyCancellable?
-    private var playbackAnimationTimer: Timer?
-    private var playbackAnimationPhase: Int = 0
 
     static let lowBatteryThreshold = 20
     private static let deviceNameKey = "buds.lastDeviceName"
@@ -52,9 +49,7 @@ final class AppModel: ObservableObject {
         playbackCancellable = playbackMonitor.$isPlaying
             .receive(on: DispatchQueue.main)
             .sink { [weak self] playing in
-                guard let self else { return }
-                self.isMediaPlaying = playing
-                self.updatePlaybackAnimation(playing: playing)
+                self?.isMediaPlaying = playing
             }
 
         rightClickMonitor = MenuBarRightClickMonitor { [weak self] in
@@ -71,28 +66,8 @@ final class AppModel: ObservableObject {
         }
     }
 
-    isolated deinit {
+    deinit {
         eventTask?.cancel()
-        playbackAnimationTimer?.invalidate()
-    }
-
-    private func updatePlaybackAnimation(playing: Bool) {
-        if playing {
-            guard playbackAnimationTimer == nil else { return }
-            playbackAnimationPhase = 0
-            menuBarImage = IconKit.playbackAnimationNSImages[0]
-            playbackAnimationTimer = Timer.scheduledTimer(withTimeInterval: 0.25, repeats: true) { [weak self] _ in
-                Task { @MainActor [weak self] in
-                    guard let self, self.isMediaPlaying else { return }
-                    self.playbackAnimationPhase = (self.playbackAnimationPhase + 1) % IconKit.playbackAnimationNSImages.count
-                    self.menuBarImage = IconKit.playbackAnimationNSImages[self.playbackAnimationPhase]
-                }
-            }
-        } else {
-            playbackAnimationTimer?.invalidate()
-            playbackAnimationTimer = nil
-            menuBarImage = IconKit.staticMenuBarNSImage
-        }
     }
 
     func onPopoverOpen() {
@@ -102,6 +77,7 @@ final class AppModel: ObservableObject {
         if debugEnabled { print("[UI] Popover open") }
 
         client.setLiveUpdatesEnabled(true)
+        playbackMonitor.checkPlayback()
 
         guard case .connected = connection else {
             client.reconnectNow()

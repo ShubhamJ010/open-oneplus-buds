@@ -101,7 +101,7 @@ private struct HeaderCardView: View {
                         .frame(width: 32, height: 32)
                         .foregroundStyle(isConnected ? Color.primary : (isReconnecting ? Color.accentColor : Color.secondary))
                         .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp.byLayer), options: .nonRepeating))
-                        .symbolEffect(.pulse.byLayer, options: .repeating, isActive: isReconnecting)
+                        .symbolEffect(.pulse.byLayer, options: .repeating, isActive: isReconnecting || (model.isMediaPlaying && isConnected))
                         .symbolEffect(.bounce.byLayer, value: isConnected)
 
                     VStack(alignment: .leading, spacing: 3) {
