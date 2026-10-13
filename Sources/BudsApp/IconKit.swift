@@ -3,8 +3,71 @@ import AppKit
 import BudsCore
 
 enum IconKit {
+    static let staticMenuBarNSImage: NSImage = {
+        let img = NSImage(systemSymbolName: "airpods", accessibilityDescription: nil) ?? NSImage()
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        let configured = img.withSymbolConfiguration(config) ?? img
+        configured.isTemplate = true
+        return configured
+    }()
+
+    static let playbackAnimationNSImages: [NSImage] = {
+        let barHeights: [[CGFloat]] = [
+            [2.5, 8.5, 4.5],
+            [5.5, 3.5, 7.5],
+            [8.5, 9.5, 3.5],
+            [4.5, 6.5, 8.5],
+            [7.5, 2.5, 5.5],
+            [3.5, 7.5, 2.5]
+        ]
+        let opacities: [CGFloat] = [1.0, 0.88, 0.72, 0.85, 1.0, 0.92]
+
+        let symbolImg = NSImage(systemSymbolName: "airpods", accessibilityDescription: nil) ?? NSImage()
+        let config = NSImage.SymbolConfiguration(pointSize: 13, weight: .semibold)
+        let configuredSymbol = symbolImg.withSymbolConfiguration(config) ?? symbolImg
+
+        let symbolSize = configuredSymbol.size
+        let eqWidth: CGFloat = 8.5
+        let spacing: CGFloat = 3.5
+        let totalWidth = symbolSize.width + spacing + eqWidth
+        let totalHeight = max(symbolSize.height, 15.0)
+
+        return (0..<barHeights.count).map { idx in
+            let heights = barHeights[idx]
+            let opacity = opacities[idx]
+
+            let finalImage = NSImage(size: NSSize(width: totalWidth, height: totalHeight), flipped: false) { rect in
+                let symbolRect = NSRect(
+                    x: 0,
+                    y: (totalHeight - symbolSize.height) / 2.0,
+                    width: symbolSize.width,
+                    height: symbolSize.height
+                )
+                configuredSymbol.draw(in: symbolRect, from: .zero, operation: .sourceOver, fraction: opacity)
+
+                let startX = symbolSize.width + spacing
+                let barWidth: CGFloat = 1.8
+                let barSpacing: CGFloat = 1.4
+                let cornerRadius: CGFloat = 0.8
+
+                NSColor.black.setFill()
+                for i in 0..<3 {
+                    let h = heights[i]
+                    let x = startX + CGFloat(i) * (barWidth + barSpacing)
+                    let y = (totalHeight - 10.0) / 2.0
+                    let barRect = NSRect(x: x, y: y, width: barWidth, height: h)
+                    let path = NSBezierPath(roundedRect: barRect, xRadius: cornerRadius, yRadius: cornerRadius)
+                    path.fill()
+                }
+                return true
+            }
+            finalImage.isTemplate = true
+            return finalImage
+        }
+    }()
+
     static func menuBarMark() -> Image {
-        Image(systemName: "airpods")
+        Image(nsImage: staticMenuBarNSImage)
     }
 
     static func ancIcon(for mode: ANCMode?, connected: Bool) -> Image {
