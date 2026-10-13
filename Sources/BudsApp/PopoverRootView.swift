@@ -73,7 +73,7 @@ private struct HeaderCardView: View {
         case .authenticating:
             return "Authenticating…"
         case .connected:
-            return "Connected"
+            return model.isMediaPlaying ? "Now Playing" : "Connected"
         case .reconnecting:
             return "Reconnecting…"
         case .failed(let msg):
@@ -94,15 +94,27 @@ private struct HeaderCardView: View {
         GlassCard {
             VStack(alignment: .leading, spacing: 10) {
                 HStack(alignment: .center, spacing: 14) {
-                    Image(systemName: iconName)
-                        .renderingMode(.template)
-                        .symbolRenderingMode(isConnected ? .monochrome : .hierarchical)
-                        .font(.system(size: 24, weight: .medium))
-                        .frame(width: 32, height: 32)
-                        .foregroundStyle(isConnected ? Color.primary : (isReconnecting ? Color.accentColor : Color.secondary))
-                        .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp.byLayer), options: .nonRepeating))
-                        .symbolEffect(.pulse.byLayer, options: .repeating, isActive: isReconnecting || (model.isMediaPlaying && isConnected))
-                        .symbolEffect(.bounce.byLayer, value: isConnected)
+                    ZStack(alignment: .bottomTrailing) {
+                        Image(systemName: iconName)
+                            .renderingMode(.template)
+                            .symbolRenderingMode(isConnected ? .monochrome : .hierarchical)
+                            .font(.system(size: 24, weight: .medium))
+                            .frame(width: 34, height: 34)
+                            .foregroundStyle(isConnected ? Color.primary : (isReconnecting ? Color.accentColor : Color.secondary))
+                            .contentTransition(.symbolEffect(.replace.magic(fallback: .downUp.byLayer), options: .nonRepeating))
+                            .symbolEffect(.pulse.byLayer, options: .repeating, isActive: isReconnecting)
+                            .symbolEffect(.bounce.byLayer, value: isConnected)
+                            .symbolEffect(.bounce.byLayer, options: .repeating, isActive: isConnected && model.isMediaPlaying)
+
+                        if isConnected && model.isMediaPlaying {
+                            Image(systemName: "music.quarternote.3")
+                                .font(.system(size: 13, weight: .bold))
+                                .foregroundStyle(Color.accentColor)
+                                .symbolEffect(.bounce.byLayer, options: .repeating)
+                                .offset(x: 5, y: 3)
+                                .transition(.scale.combined(with: .opacity))
+                        }
+                    }
 
                     VStack(alignment: .leading, spacing: 3) {
                         Text(deviceTitle)
@@ -110,9 +122,16 @@ private struct HeaderCardView: View {
                             .lineLimit(1)
 
                         HStack(spacing: 6) {
-                            Circle()
-                                .fill(statusIndicatorColor)
-                                .frame(width: 7, height: 7)
+                            if isConnected && model.isMediaPlaying {
+                                Image(systemName: "waveform")
+                                    .font(.system(size: 11, weight: .semibold))
+                                    .foregroundStyle(Color.accentColor)
+                                    .symbolEffect(.variableColor.iterative.reversing, options: .repeating)
+                            } else {
+                                Circle()
+                                    .fill(statusIndicatorColor)
+                                    .frame(width: 7, height: 7)
+                            }
 
                             Text(connectionSubtitle)
                                 .font(Typography.subtitle)

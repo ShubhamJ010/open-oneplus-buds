@@ -33,6 +33,14 @@
 
 ---
 
+## What's New in v0.1.1
+
+- **Dynamic Beat & Waveform Playback Animations**: Active audio playback detection via `MediaRemote` and CoreAudio hardware state. When media is playing, the popover header icon springs to the beat with bouncing earbuds and notes (`music.quarternote.3`), paired with an animated live `waveform` visualizer.
+- **Improved Bluetooth State Handling**: Enhanced diagnostics and quick-launch preferences button when Bluetooth is disabled or unauthorized.
+- **Refined Liquid Glass UX**: Polished header card layout, eliminated duplicate error chips, and cleaned up menu bar footprint.
+
+---
+
 ## What's New in v0.1.0
 
 - **OnePlus Buds Z2 Support**: Added GATT routing (`000008A4`), multi-frame packet parsing (decoupling concatenated `0xAA` frames), and accurate mapping for Normal (`0x04`) and Max (`0x08`) noise cancellation.
