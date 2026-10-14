@@ -508,6 +508,23 @@ public final class BudsClientImpl: NSObject, BudsClient {
         if debugEnabled { print("[Buds] \(msg)") }
     }
 
+    private struct PairedBudRecord {
+        let name: String
+        let address: String
+        let isConnected: Bool
+    }
+
+    private func getPairedBudsRecords() -> [PairedBudRecord] {
+        let paired = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice]) ?? []
+        return paired.compactMap { d in
+            guard let rawName = d.nameOrAddress, BudsDeviceFilter.isAudioDeviceName(rawName) else {
+                return nil
+            }
+            let addr = (d.addressString ?? "").lowercased().replacingOccurrences(of: ":", with: "-")
+            return PairedBudRecord(name: rawName, address: addr, isConnected: d.isConnected())
+        }
+    }
+
     private func startScanOrRetrieve() {
         guard let central else { return }
         guard central.state == .poweredOn else {
@@ -518,8 +535,24 @@ public final class BudsClientImpl: NSObject, BudsClient {
         scanWatchdogTask?.cancel()
         scanWatchdogTask = nil
 
-        let savedUUIDString = UserDefaults.standard.string(forKey: Self.peripheralUUIDKey)
+        let pairedBuds = getPairedBudsRecords()
+        guard !pairedBuds.isEmpty else {
+            log("Security gate: No paired OnePlus audio devices in macOS Bluetooth. Scan aborted.")
+            UserDefaults.standard.removeObject(forKey: Self.peripheralUUIDKey)
+            UserDefaults.standard.removeObject(forKey: "buds.lastDeviceName")
+            connectionState = .failed(message: "No buds paired to Mac")
+            return
+        }
+
+        let pairedNames = Set(pairedBuds.map { $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) })
         let savedName = UserDefaults.standard.string(forKey: "buds.lastDeviceName")
+
+        // Sanitize saved device against paired list
+        if let savedName, !pairedNames.contains(savedName.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)) {
+            log("Security gate: Cached device '\(savedName)' not paired to Mac; clearing cache")
+            UserDefaults.standard.removeObject(forKey: Self.peripheralUUIDKey)
+            UserDefaults.standard.removeObject(forKey: "buds.lastDeviceName")
+        }
 
         // 1. Check if already connected to macOS system Bluetooth with vendor audio services
         let targetServiceUUIDs = [
@@ -528,7 +561,10 @@ public final class BudsClientImpl: NSObject, BudsClient {
             CBUUID(string: OPOProtocol.serviceFE2C)
         ]
         let retrieve = central.retrieveConnectedPeripherals(withServices: targetServiceUUIDs)
-        if let first = retrieve.first(where: { BudsDeviceFilter.isAudioDeviceName($0.name ?? savedName) }) {
+        if let first = retrieve.first(where: { p in
+            guard let name = p.name?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) else { return false }
+            return pairedNames.contains(name)
+        }) {
             log("Found system peripheral with audio service: \(first.name ?? "unnamed")")
             central.stopScan()
             peripheral = first
@@ -538,22 +574,28 @@ public final class BudsClientImpl: NSObject, BudsClient {
             return
         }
 
-        // 2. If known saved buds peripheral is retrieved by identifier
-        if let savedUUIDString, let uuid = UUID(uuidString: savedUUIDString) {
+        // 2. If known saved buds peripheral is retrieved by identifier AND matches paired list
+        if let validSavedUUID = UserDefaults.standard.string(forKey: Self.peripheralUUIDKey),
+           let uuid = UUID(uuidString: validSavedUUID) {
             let known = central.retrievePeripherals(withIdentifiers: [uuid])
             if let first = known.first {
-                if first.state == .connected {
-                    log("Found known peripheral connected: \(first.name ?? savedName ?? "unnamed")")
-                    central.stopScan()
-                    peripheral = first
-                    first.delegate = self
-                    let name = first.name ?? savedName
-                    connectionState = .connecting(name: name)
-                    central.connect(first, options: nil)
-                    return
-                } else if first.state == .connecting {
-                    log("Peripheral already connecting, waiting...")
-                    return
+                let name = (first.name ?? savedName ?? "").lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+                if pairedNames.contains(name) {
+                    if first.state == .connected {
+                        log("Found known peripheral connected: \(first.name ?? savedName ?? "unnamed")")
+                        central.stopScan()
+                        peripheral = first
+                        first.delegate = self
+                        let dispName = first.name ?? savedName
+                        connectionState = .connecting(name: dispName)
+                        central.connect(first, options: nil)
+                        return
+                    } else if first.state == .connecting {
+                        log("Peripheral already connecting, waiting...")
+                        return
+                    }
+                } else {
+                    UserDefaults.standard.removeObject(forKey: Self.peripheralUUIDKey)
                 }
             }
         }
@@ -563,7 +605,7 @@ public final class BudsClientImpl: NSObject, BudsClient {
             peripheral = nil
         }
 
-        log("Scanning for OnePlus Buds...")
+        log("Scanning for paired OnePlus Buds...")
         connectionState = .scanning
         central.scanForPeripherals(withServices: nil, options: [CBCentralManagerScanOptionAllowDuplicatesKey: false])
 
@@ -828,6 +870,13 @@ public final class BudsClientImpl: NSObject, BudsClient {
     fileprivate func handleIOBluetoothDeviceConnected(name: String) {
         logger.info("IOBluetooth device connected: \(name, privacy: .public)")
         guard BudsDeviceFilter.isAudioDeviceName(name) else { return }
+        let paired = getPairedBudsRecords()
+        let pairedNames = Set(paired.map { $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) })
+        let nameNorm = name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+        guard pairedNames.contains(nameNorm) else {
+            logger.info("Security gate: Connected device '\(name, privacy: .public)' is not a paired buds device; ignoring")
+            return
+        }
         log("System audio connected to \(name), initiating Buds sync...")
         switch connectionState {
         case .idle, .failed, .bluetoothOff, .bluetoothUnauthorized,
@@ -925,10 +974,36 @@ extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurre
                                didDiscover peripheral: CBPeripheral,
                                advertisementData: [String: Any],
                                rssi RSSI: NSNumber) {
-        let name = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
+        let rawName = peripheral.name ?? (advertisementData[CBAdvertisementDataLocalNameKey] as? String)
+        let nameNorm = rawName?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)
+
+        let paired = getPairedBudsRecords()
+        guard !paired.isEmpty else {
+            central.stopScan()
+            connectionState = .failed(message: "No buds paired to Mac")
+            return
+        }
+
+        let pairedNames = Set(paired.map { $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) })
+        let pairedAddresses = Set(paired.map { $0.address }.filter { !$0.isEmpty })
+
+        // Security gate 1: Name MUST match a paired audio device in macOS
+        guard let nameNorm, pairedNames.contains(nameNorm) else {
+            // Unpaired device advertising nearby - drop!
+            return
+        }
+
+        // Security gate 2: If advertisement contains MAC address, it MUST match a paired MAC
+        if let advMac = BudsDeviceFilter.parseAdvertisementAddress(advertisementData) {
+            guard pairedAddresses.contains(advMac) else {
+                // Same model name, but different physical hardware (coworker/neighbor)! Drop!
+                return
+            }
+        }
+
         let isKnown = (peripheral.identifier.uuidString == UserDefaults.standard.string(forKey: Self.peripheralUUIDKey))
-        log("Discovered: \(name ?? "unnamed") (RSSI: \(RSSI), isKnown=\(isKnown))")
-        guard isKnown || BudsDeviceFilter.matchesAdvertisement(peripheralName: name, advertisementData: advertisementData) else { return }
+        log("Discovered paired bud: \(rawName ?? "unnamed") (RSSI: \(RSSI), isKnown=\(isKnown))")
+        guard isKnown || BudsDeviceFilter.matchesAdvertisement(peripheralName: rawName, advertisementData: advertisementData) else { return }
 
         // Opportunistically extract battery status from advertisement frame before GATT handshake finishes
         if let advBattery = BudsDeviceFilter.parseAdvertisementBattery(advertisementData) {
@@ -945,7 +1020,7 @@ extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurre
         }
         self.peripheral = peripheral
         peripheral.delegate = self
-        let displayName = name ?? UserDefaults.standard.string(forKey: "buds.lastDeviceName")
+        let displayName = rawName ?? UserDefaults.standard.string(forKey: "buds.lastDeviceName")
         log("Connecting to \(displayName ?? "device")...")
         connectionState = .connecting(name: displayName)
         central.connect(peripheral, options: nil)
@@ -1057,6 +1132,20 @@ extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurre
             return
         }
 
+        // Security gate: re-verify connected peripheral is paired to macOS
+        let paired = getPairedBudsRecords()
+        let pairedNames = Set(paired.map { $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) })
+        let nameNorm = peripheral.name?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        guard pairedNames.contains(nameNorm) else {
+            logger.info("Security gate: Connected peripheral '\(peripheral.name ?? "unnamed", privacy: .public)' is not paired to Mac; disconnecting immediately")
+            serviceDiscoveryTimeoutTask?.cancel()
+            serviceDiscoveryTimeoutTask = nil
+            central?.cancelPeripheralConnection(peripheral)
+            self.peripheral = nil
+            connectionState = .failed(message: "Not paired to Mac")
+            return
+        }
+
         for service in services {
             peripheral.discoverCharacteristics(nil, for: service)
         }
@@ -1097,7 +1186,17 @@ extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurre
             sessionReadyTriggered = true
             serviceDiscoveryTimeoutTask?.cancel()
             serviceDiscoveryTimeoutTask = nil
-            UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: Self.peripheralUUIDKey)
+
+            let paired = getPairedBudsRecords()
+            let pairedNames = Set(paired.map { $0.name.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) })
+            let nameNorm = peripheral.name?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            if pairedNames.contains(nameNorm) {
+                UserDefaults.standard.set(peripheral.identifier.uuidString, forKey: Self.peripheralUUIDKey)
+                if let name = peripheral.name {
+                    UserDefaults.standard.set(name, forKey: "buds.lastDeviceName")
+                }
+            }
+
             log("Session ready: write and notify channels established")
             connectionState = .connected(name: peripheral.name)
             didInitialRefreshAfterConnect = true
