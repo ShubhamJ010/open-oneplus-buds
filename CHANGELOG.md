@@ -5,6 +5,20 @@ The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 
 ---
 
+## [0.1.2] - 2026-10-14
+
+### Security
+- **macOS Pairing Gates**: Strictly enforce verification against `IOBluetoothDevice.pairedDevices()` before initiating BLE scans. Validates manufacturer advertisement payload reverse BD_ADDR against paired device MAC addresses and drops unpaired advertisements.
+
+### Improved
+- **Push-Driven Audio Monitoring**: Replaced periodic polling in `MediaPlaybackMonitor` with native CoreAudio property listeners (`kAudioHardwarePropertyDefaultOutputDevice` and `kAudioDevicePropertyDeviceIsRunningSomewhere`).
+- **Decoupled Bluetooth Bridge**: Introduced `IOBluetoothBridge` in `BudsClient` to isolate Objective-C runtime notifications from `@MainActor`, avoiding reconnect thrashing.
+
+### Added
+- **Performance Diagnostics**: Added `perf-testing-buds` skill and `audit_perf.sh` diagnostic script for live CPU, memory, and energy profiling.
+
+---
+
 ## [0.1.1] - 2026-10-13
 
 ### Added
