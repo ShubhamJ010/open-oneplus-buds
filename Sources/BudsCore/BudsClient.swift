@@ -116,6 +116,7 @@ public final class BudsClientImpl: NSObject, BudsClient {
     private var didInitialRefreshAfterConnect = false
     private var sessionReadyTriggered = false
     private var ioBluetoothNotification: IOBluetoothUserNotification?
+    private var ioBluetoothBridge: IOBluetoothBridge?
 
     // Some devices send responses or telemetry unsolicited. We track a monotonically
     // increasing sequence for each model; query operations wait for the next update.
@@ -143,15 +144,18 @@ public final class BudsClientImpl: NSObject, BudsClient {
         central = CBCentralManager(delegate: self, queue: .main)
 
         // Listen for system-level Classic Bluetooth audio connection (e.g. lid open auto-connect)
+        let bridge = IOBluetoothBridge(client: self)
+        ioBluetoothBridge = bridge
         ioBluetoothNotification = IOBluetoothDevice.register(
-            forConnectNotifications: self,
-            selector: #selector(handleIOBluetoothDeviceConnect(_:device:))
+            forConnectNotifications: bridge,
+            selector: #selector(IOBluetoothBridge.handleConnect(_:device:))
         )
     }
 
     public func stop() {
         ioBluetoothNotification?.unregister()
         ioBluetoothNotification = nil
+        ioBluetoothBridge = nil
         reconnectTask?.cancel(); reconnectTask = nil
         serviceDiscoveryTimeoutTask?.cancel(); serviceDiscoveryTimeoutTask = nil
         if let p = peripheral {
@@ -814,47 +818,64 @@ public final class BudsClientImpl: NSObject, BudsClient {
         try await waitForSeqChange(current: current, from: from, timeout: timeout)
     }
 
-    /// System-level Classic Bluetooth audio connection listener.
-    /// Fired by IOBluetooth on a background dispatch queue when the case lid opens and macOS
-    /// establishes the A2DP/HFP audio connection. We declare this method as `nonisolated` so
-    /// the Objective-C runtime callback doesn't trip Swift concurrency actor checks, and safely
-    /// hop to `@MainActor` to trigger GATT synchronization.
-    @objc nonisolated private func handleIOBluetoothDeviceConnect(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
-        let name = device.nameOrAddress ?? "unknown"
-        Task { @MainActor [weak self] in
-            guard let self else { return }
-            self.logger.info("IOBluetooth device connected: \(name, privacy: .public)")
-            guard BudsDeviceFilter.isAudioDeviceName(name) else { return }
-            self.log("System audio connected to \(name), initiating Buds sync...")
-            // Only trigger retrieval/reconnect if we are not already connected
-            if case .connected = self.connectionState {
-                return
-            }
-            self.reconnectNow()
+    /// System-level Classic Bluetooth audio connection listener handler.
+    /// Fired when macOS establishes the A2DP/HFP audio connection (e.g. when the case lid is opened).
+    ///
+    /// Ignores non-buds audio devices, and avoids reconnect thrashing if a connection is already
+    /// active or in-progress.
+    /// - Parameter name: Name or MAC address of the connected Bluetooth device.
+    @MainActor
+    fileprivate func handleIOBluetoothDeviceConnected(name: String) {
+        logger.info("IOBluetooth device connected: \(name, privacy: .public)")
+        guard BudsDeviceFilter.isAudioDeviceName(name) else { return }
+        log("System audio connected to \(name), initiating Buds sync...")
+        switch connectionState {
+        case .idle, .failed, .bluetoothOff, .bluetoothUnauthorized,
+             .bluetoothUnsupported, .bluetoothResetting:
+            reconnectNow()
+        default:
+            // Already connected or connection in progress (.connecting, .discovering, .authenticating)
+            // Do not interrupt with reconnect thrash!
+            return
         }
     }
 
     /// Asynchronously initiate Bluetooth Classic baseband paging (HCI Create Connection)
     /// to take over (snatch) the connection from a previously paired phone to this Mac.
+    ///
+    /// Checks paired devices matching known earbuds names, prioritizing the last known device,
+    /// and issues `openConnection()` until a device connects.
     nonisolated private func snatchClassicConnection() {
         DispatchQueue.global(qos: .userInitiated).async { [logger] in
             let paired = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice]) ?? []
-            guard let dev = paired.first(where: { d in
+            let candidates = paired.filter { d in
                 guard let name = d.nameOrAddress else { return false }
                 return BudsDeviceFilter.isAudioDeviceName(name)
-            }) else {
+            }
+            guard !candidates.isEmpty else {
                 logger.info("Snatch: No paired buds found to connect")
                 return
             }
 
-            if dev.isConnected() {
-                logger.info("Snatch: Already connected to \(dev.nameOrAddress ?? "device", privacy: .public)")
+            if let connected = candidates.first(where: { $0.isConnected() }) {
+                logger.info("Snatch: Already connected to \(connected.nameOrAddress ?? "device", privacy: .public)")
                 return
             }
 
-            logger.info("Snatch: Opening Classic ACL connection to \(dev.nameOrAddress ?? "device", privacy: .public)...")
-            let res = dev.openConnection()
-            logger.info("Snatch: openConnection result: \(res)")
+            let savedName = UserDefaults.standard.string(forKey: "buds.lastDeviceName")
+            let sortedCandidates = candidates.sorted { a, _ in
+                if let savedName, a.nameOrAddress == savedName { return true }
+                return false
+            }
+
+            for dev in sortedCandidates {
+                logger.info("Snatch: Opening Classic ACL connection to \(dev.nameOrAddress ?? "device", privacy: .public)...")
+                let res = dev.openConnection()
+                logger.info("Snatch: openConnection(\(dev.nameOrAddress ?? "?", privacy: .public)) result: \(res)")
+                if res == 0 {
+                    break
+                }
+            }
         }
     }
 
@@ -1209,3 +1230,33 @@ extension BudsClientImpl: @preconcurrency CBCentralManagerDelegate, @preconcurre
     // because constant/background polling is undesirable. If the buds send unknown status
     // bytes, the app will reflect the last known mode until a known push state arrives.
 }
+
+// MARK: - IOBluetoothBridge (Thread-safe un-isolated bridge)
+
+/// Objective-C notification bridge for `IOBluetoothDevice` connection events.
+///
+/// `IOBluetoothDevice.register(forConnectNotifications:selector:)` requires an `@objc` target
+/// with an Objective-C selector that will be invoked from IOBluetooth background queues.
+/// Holding a weak reference to `BudsClientImpl`, this bridge isolates the un-isolated
+/// Objective-C callback and safely dispatches to `@MainActor` to update client state.
+private final class IOBluetoothBridge: NSObject {
+    private weak var client: BudsClientImpl?
+
+    init(client: BudsClientImpl) {
+        self.client = client
+        super.init()
+    }
+
+    /// Objective-C notification callback invoked by IOBluetooth when any Bluetooth device connects.
+    ///
+    /// - Parameters:
+    ///   - notification: The notification token object.
+    ///   - device: The `IOBluetoothDevice` instance that connected.
+    @objc func handleConnect(_ notification: IOBluetoothUserNotification, device: IOBluetoothDevice) {
+        let name = device.nameOrAddress ?? "unknown"
+        Task { @MainActor [weak client] in
+            client?.handleIOBluetoothDeviceConnected(name: name)
+        }
+    }
+}
+
