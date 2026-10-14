@@ -3,6 +3,7 @@ import SwiftUI
 import Combine
 import BudsCore
 import AppKit
+import IOBluetooth
 
 @MainActor
 final class AppModel: ObservableObject {
@@ -38,7 +39,11 @@ final class AppModel: ObservableObject {
     init(client: BudsClient = BudsClientImpl()) {
         self.client = client
         let cached = UserDefaults.standard.string(forKey: Self.deviceNameKey)
-        if let cached, BudsDeviceFilter.isAudioDeviceName(cached) {
+        let paired = (IOBluetoothDevice.pairedDevices() as? [IOBluetoothDevice]) ?? []
+        let pairedNames = Set(paired.compactMap { $0.nameOrAddress?.lowercased().trimmingCharacters(in: .whitespacesAndNewlines) })
+        if let cached,
+           BudsDeviceFilter.isAudioDeviceName(cached),
+           pairedNames.contains(cached.lowercased().trimmingCharacters(in: .whitespacesAndNewlines)) {
             self.deviceName = cached
         } else {
             self.deviceName = nil

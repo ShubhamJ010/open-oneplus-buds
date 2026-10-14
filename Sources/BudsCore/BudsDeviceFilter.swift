@@ -97,4 +97,18 @@ public enum BudsDeviceFilter {
         }
         return nil
     }
+
+    /// Parses the Bluetooth Classic MAC address (BD_ADDR) from manufacturer advertisement payload (Company ID 0x072F).
+    /// Example payload: 2F 07 14 10 06 3F 00 01 98 04 ED 6F 4B 2A 0F 84 29 C8 C8 BA 01
+    /// Bytes 10..15 encode the MAC address in little-endian order.
+    /// Returns address formatted as "xx-xx-xx-xx-xx-xx" (lowercase).
+    public static func parseAdvertisementAddress(_ advertisementData: [String: Any]) -> String? {
+        guard let mfg = advertisementData[CBAdvertisementDataManufacturerDataKey] as? Data, mfg.count >= 16 else {
+            return nil
+        }
+        let bytes = [UInt8](mfg)
+        guard bytes[0] == 0x2F && bytes[1] == 0x07 else { return nil }
+        let macBytes = bytes[10...15].reversed()
+        return macBytes.map { String(format: "%02x", $0) }.joined(separator: "-")
+    }
 }
